@@ -30,3 +30,22 @@
 
 # Debug files
 *.dSYM/
+Makefile
+Makefile.in
+aclocal.m4
+autom4te.cache/
+config.h
+config.h.in
+config.log
+config.status
+config/
+configure
+libtool
+stamp-h1
+.dirstamp
+.deps
+
+# exe
+examples/ibv_cc_pingpong
+examples/ibv_task_pingpong
+tests/ibv_cc_test

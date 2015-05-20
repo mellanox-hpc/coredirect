@@ -1,0 +1,19 @@
+
+
+## How to build tests and examples
+
+./autogen.sh
+./configure
+make
+
+## How to run CD tests:
+
+for dev in $(ibstat -l); do
+    hca="${dev}:1";
+    GTEST_SHUFFLE=1 IBV_TEST_DEV=${hca} tests/ibv_cc_test;
+done
+
+
+## How to run CD tests w/ valgrind
+
+valgrind --tool=memcheck --leak-check=full --track-origins=yes tests/ibv_cc_test
