@@ -22,7 +22,7 @@
 #include <infiniband/arch.h>
 #include <infiniband/umad.h>
 
-#include "../config.h"
+#include "config.h"
 
 /* MPI should be used for this version */
 #ifdef HAVE_MPICC
@@ -269,7 +269,7 @@ static int __init_ctx( struct cc_context *ctx )
 
 	ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, ctx->conf.size, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
 	if (!ctx->mr)
-		log_fatal("ibv_reg_mr failed\n");
+		log_fatal("ibv_reg_mr failed (buf=%p size=%d)\n", ctx->buf, ctx->conf.size);
 
 	/*
 	 * 2. Create Manage QP
@@ -300,7 +300,7 @@ static int __init_ctx( struct cc_context *ctx )
 		init_attr.pd = ctx->pd;
 
 		{
-			init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_QP_INIT_ATTR_PD;
+			init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
 			init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
 			ctx->mqp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
 		}
@@ -432,7 +432,7 @@ static int __init_ctx( struct cc_context *ctx )
 			init_attr.pd = ctx->pd;
 
 			{
-				init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_QP_INIT_ATTR_PD;
+				init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
 				init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
 				ctx->proc_array[i].qp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
 			}
@@ -576,7 +576,7 @@ static void __usage(const char *argv)
 		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-c", "--check",  "check before run (default: 0)");
 		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-w", "--warmup",  "warmup iterations (default: 10)");
 		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-d", "--debug=<0,1,2>",  "debug mask (default: 1)");
-		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-s", "--size=<bytes>",  "size of message to exchange (default: 0)");
+		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-s", "--size=<bytes>",  "size of message to exchange (default: 1)");
 		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-?", "--help",  "display this help and exit");
 		fprintf(stderr, "\n");
 	}
@@ -591,7 +591,7 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 	ctx->conf.iters = 100;
 	ctx->conf.check = 0;
 	ctx->conf.warmup = 10;
-	ctx->conf.size = 0;
+	ctx->conf.size = 1;
 	ctx->conf.cq_tx_depth = 0x10;
 	ctx->conf.cq_rx_depth = 0x10;
 	ctx->conf.qp_tx_depth = 0x10;

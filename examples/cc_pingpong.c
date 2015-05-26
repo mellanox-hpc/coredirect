@@ -22,7 +22,7 @@
 #include <math.h>
 #include <infiniband/arch.h>
 
-#include "../config.h"
+#include "config.h"
 #include "cc_pingpong.h"
 
 
