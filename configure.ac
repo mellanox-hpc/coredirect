@@ -15,7 +15,7 @@ AM_INIT_AUTOMAKE([1.10 foreign tar-ustar silent-rules subdir-objects])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 
 dnl Checks for programs
-AC_PROG_CC
+AC_PROG_CC([mpicc gcc icc])
 AC_PROG_CXX
 AC_GNU_SOURCE
 AC_PROG_LN_S
@@ -74,6 +74,9 @@ fi
 dnl Checks for typedefs, structures, and compiler characteristics.
 AC_C_CONST
 
+if test $(basename ${CC}x) = mpiccx; then
+    AC_DEFINE(HAVE_MPICC, 1, [Use mpirun as a launcher])
+fi
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
