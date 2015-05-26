@@ -1,5 +1,4 @@
-/*
- * Copyright (c) 2005 Topspin Communications.  All rights reserved.
+/* Copyright (c) 2005 Topspin Communications.  All rights reserved.
  * Copyright (c) 2009-2010 Mellanox Technologies.  All rights reserved.
  */
 
@@ -25,6 +24,17 @@
 
 #include "cc_pingpong.h"
 
+#define HAVE_MPI 1
+
+#if HAVE_MPI
+#include <mpi.h>
+#endif
+
+// -------------------------------------------------------------------------
+struct test_params app_params;  // make command line args global
+char hostname[256];
+int my_rank;
+// -------------------------------------------------------------------------
 
 #define MAX(x, y)	(((x) > (y)) ? (x) : (y))
 #define MIN(x, y)	(((x) < (y)) ? (x) : (y))
@@ -145,6 +155,45 @@ struct pingpong_dest {
 	int psn;
 };
 
+struct test_params {
+	int          port;
+	int          ib_port;
+	int          size;
+	enum ibv_mtu mtu;
+	int          rx_depth;
+	int          iters;
+	int          sl;
+	int          use_event;
+	int          mqe_poll;
+	int          verbose;
+	int          verify;
+	enum		 pp_wr_data_type  calc_data_type;
+	enum		 pp_wr_calc_op	  calc_opcode;
+	char 		 calc_operands_str[256];
+	char		 ib_devname[128];
+	char		 servername[128]; // used when run in standalone (non-MPI mode)
+};
+
+
+void set_default_test_params(struct test_params *v)
+{
+	memset(v, 0, sizeof(struct test_params));
+
+    v->port = 18515;
+    v->ib_port = 1;
+    v->size = 4096;
+    v->mtu = IBV_MTU_1024;
+    v->rx_depth = 500;
+    v->iters = 1000;
+    v->sl = 0;
+    v->use_event = 0;
+    v->mqe_poll = 0;
+    v->verbose = 0;
+    v->verify = 0;
+    v->calc_data_type = PP_DATA_TYPE_INVALID;
+    v->calc_opcode = PP_CALC_INVALID;
+}
+
 static int pp_prepare_net_buff(int do_neg,
 				   enum pp_wr_data_type type,
 				   const void *in_buff, void *net_buff,
@@ -226,7 +275,7 @@ static inline int pp_prepare_host_buff(int do_neg,
 	int to_mult = (do_neg ? -1 : 1);
 	int rc = 0;
 
-	/* todo - add better support in FLOAT */
+	// todo - add better support in FLOAT
 	tmp_buff.ll = ntohll(*(uint64_t *)in_buff) * to_mult;
 
 	switch (type) {
@@ -305,7 +354,7 @@ static int pp_pack_data_for_calc(struct ibv_context *context,
 	int do_neg = 0;
 	int conv_op_to_bin = 0;
 
-	/* input parameters check */
+	// input parameters check
 	if (!context ||
 		!params ||
 		!params->host_buf ||
@@ -317,7 +366,7 @@ static int pp_pack_data_for_calc(struct ibv_context *context,
 		params->op == PP_CALC_INVALID)
 		return EINVAL;
 
-	/* network buffer must be 16B aligned */
+	// network buffer must be 16B aligned
 	if ((uintptr_t)(params->net_buf) % 16) {
 		fprintf(stderr, "network buffer must be 16B aligned\n");
 		return EINVAL;
@@ -379,25 +428,25 @@ static int pp_pack_data_for_calc(struct ibv_context *context,
 
 	case PP_CALC_MAXLOC:
 	case PP_CALC_MINLOC:
-	case PP_CALC_PROD:	/* Unsupported operation */
+	case PP_CALC_PROD:	// Unsupported operation
 	case PP_CALC_INVALID:
 	default:
 		fprintf(stderr, "unsupported op %d\n", op);
 		return EINVAL;
 	}
 
-	/* convert data from user defined buffer to hardware supported representation */
+	// convert data from user defined buffer to hardware supported representation
 	if (pp_prepare_net_buff(do_neg, type, host_buffer, network_buffer, out_type, out_size))
 		return EINVAL;
 
-	/* logical operations use true/false */
+	// logical operations use true/false
 	if (conv_op_to_bin)
 		*(uint64_t *)network_buffer = !!(*(uint64_t *)network_buffer);
 
-	/* convert to network order supported by hardware */
+	// convert to network order supported by hardware
 	*(uint64_t *)network_buffer = htonll(*(uint64_t *)network_buffer);
 
-	/* for MINLOC/MAXLOC - copy the ID to the network buffer */
+	// for MINLOC/MAXLOC - copy the ID to the network buffer
 	if (op == PP_CALC_MINLOC || op == PP_CALC_MAXLOC)
 		*(uint64_t *)((unsigned char *)network_buffer + 8) = htonll(id);
 
@@ -432,15 +481,15 @@ static int pp_unpack_data_from_calc(struct ibv_context *context,
 	id = params->id;
 	host_buffer = params->host_buf;
 
-	/* Check if it's needed to convert the buffer & operation */
+	// Check if it's needed to convert the buffer & operation
 	if ((op == PP_CALC_MIN) || (op == PP_CALC_MINLOC))
 		do_neg = 1;
 
-	/* convert data from hardware supported data representation to user defined buffer */
+	// convert data from hardware supported data representation to user defined buffer
 	if (pp_prepare_host_buff(do_neg, type, network_buffer, host_buffer))
 		return EINVAL;
 
-	/* for MINLOC/MAXLOC - return ID */
+	// for MINLOC/MAXLOC - return ID
 	if (op == PP_CALC_MINLOC || op == PP_CALC_MAXLOC) {
 		if (id)
 			*id = ntohll(*(uint64_t *)((unsigned char *)network_buffer + 8));
@@ -506,6 +555,40 @@ static int pp_connect_ctx(struct pingpong_context *ctx,
 	}
 
 	return 0;
+}
+
+
+// -------------------------------------------------------------------------------
+// return pointer to struct containing { lid, qpn, psn }
+// -------------------------------------------------------------------------------
+
+
+
+static struct pingpong_dest *pp_exch_dest_ib(struct pingpong_context *ctx, const struct pingpong_dest *my_dest, int peer_proc)
+{
+	struct pingpong_dest *rem_dest = NULL;
+	fprintf(stderr, "%s %s  rank %d\n", hostname, __FUNCTION__, my_rank);
+
+	rem_dest = malloc(sizeof *rem_dest);
+	if (!rem_dest)
+		goto out;
+
+	MPI_Status *status = NULL;
+
+	int send_count = sizeof(*my_dest);
+	int recv_count = sizeof(*rem_dest);
+	int send_tag = 0;
+	int recv_tag = 0;
+
+	MPI_Sendrecv(my_dest, send_count, MPI_CHAR, peer_proc, send_tag,
+				rem_dest, recv_count, MPI_CHAR, peer_proc, recv_tag,
+				MPI_COMM_WORLD, status);
+
+   fprintf(stderr, "%s %s LOCAL:  %04x:%06x:%06x\n", hostname, __FUNCTION__, my_dest->lid,  my_dest->qpn,  my_dest->psn);
+   fprintf(stderr, "%s %s REMOTE: %04x:%06x:%06x\n", hostname, __FUNCTION__, rem_dest->lid, rem_dest->qpn, rem_dest->psn);
+
+out:
+	return rem_dest;
 }
 
 static struct pingpong_dest *pp_client_exch_dest(const char *servername,
@@ -580,6 +663,11 @@ out:
 	return rem_dest;
 }
 
+
+
+// -------------------------------------------------------------------------------
+// return pointer to struct containing { lid, qpn, psn }
+// -------------------------------------------------------------------------------
 static struct pingpong_dest *pp_server_exch_dest(struct pingpong_context *ctx,
 						 int ib_port,
 						 enum ibv_mtu mtu,
@@ -645,8 +733,7 @@ static struct pingpong_dest *pp_server_exch_dest(struct pingpong_context *ctx,
 	n = read(connfd, msg, sizeof msg);
 	if (n != sizeof msg) {
 		perror("server read");
-		fprintf(stderr, "%d/%d: Couldn't read remote address\n",
-			n, (int) sizeof msg);
+		fprintf(stderr, "%d/%d: Couldn't read remote address\n", n, (int) sizeof msg);
 		goto out;
 	}
 
@@ -656,16 +743,14 @@ static struct pingpong_dest *pp_server_exch_dest(struct pingpong_context *ctx,
 
 	sscanf(msg, "%x:%x:%x", &rem_dest->lid, &rem_dest->qpn, &rem_dest->psn);
 
-	if (pp_connect_ctx(ctx, ctx->qp, ib_port, my_dest->psn, mtu,
-			       sl, rem_dest)) {
+	if (pp_connect_ctx(ctx, ctx->qp, ib_port, my_dest->psn, mtu, sl, rem_dest)) {
 		fprintf(stderr, "Couldn't connect to remote QP\n");
 		free(rem_dest);
 		rem_dest = NULL;
 		goto out;
 	}
 
-	sprintf(msg, "%04x:%06x:%06x", my_dest->lid, my_dest->qpn,
-		my_dest->psn);
+	sprintf(msg, "%04x:%06x:%06x", my_dest->lid, my_dest->qpn, my_dest->psn);
 	if (write(connfd, msg, sizeof msg) != sizeof msg) {
 		fprintf(stderr, "Couldn't send local address\n");
 		free(rem_dest);
@@ -673,7 +758,7 @@ static struct pingpong_dest *pp_server_exch_dest(struct pingpong_context *ctx,
 		goto out;
 	}
 
-	/* expecting "done" msg */
+	// expecting "done" msg
 	if (read(connfd, msg, sizeof(msg)) <= 0) {
 		fprintf(stderr, "Couldn't read \"done\" msg\n");
 		free(rem_dest);
@@ -720,9 +805,9 @@ int pp_parse_calc_to_gather(char *ops_str,
 	if (!__gather_token)
 		return -1;
 
-	/* Build the gather list, assume one operand per sge. todo: improve for any nr of operands */
+	// Build the gather list, assume one operand per sge. todo: improve for any nr of operands
 	for (i = 0; i < num_operands; i++) {
-		/* copy the operands to the buffer */
+		// copy the operands to the buffer
 		switch (data_type) {
 		case PP_DATA_TYPE_INT8:
 			return -1;
@@ -792,7 +877,7 @@ static int pp_prepare_sg_list(int op_per_gather,
 	 */
 	sz = -1;
 	sz = pp_calc_data_size_to_bytes(calc_ctx->data_size);
-	num_sge = (num_operands / op_per_gather) + ((num_operands % op_per_gather) ? 1 : 0); /* todo - change to ceil. requires -lm */
+	num_sge = (num_operands / op_per_gather) + ((num_operands % op_per_gather) ? 1 : 0); // todo - change to ceil. requires -lm
 
 	gather_list = calloc(num_sge, sizeof(*gather_list));
 	if (!gather_list) {
@@ -801,7 +886,7 @@ static int pp_prepare_sg_list(int op_per_gather,
 		return -1;
 	}
 
-	/* Build the gather list */
+	// Build the gather list
 	for (i = 0, gather_ix = 0; i < num_operands; i++) {
 		if (!(i % op_per_gather)) {
 			gather_list[gather_ix].addr   = (uint64_t)(uintptr_t)buff + ((sz + 8) * i);
@@ -855,8 +940,7 @@ struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev, int size,
 
 	ctx->context = ibv_open_device(ib_dev);
 	if (!ctx->context) {
-		fprintf(stderr, "Couldn't get context for %s\n",
-			ibv_get_device_name(ib_dev));
+		fprintf(stderr, "Couldn't get context for %s\n", ibv_get_device_name(ib_dev));
 		goto clean_net_buf;
 	}
 
@@ -884,7 +968,7 @@ struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev, int size,
 	if (calc_op != PP_CALC_INVALID) {
 		int op_per_gather, num_op, max_num_op;
 
-		ctx->calc_op.opcode	= IBV_EXP_CALC_OP_NUMBER;
+		ctx->calc_op.opcode	    = IBV_EXP_CALC_OP_NUMBER;
 		ctx->calc_op.data_type	= IBV_EXP_CALC_DATA_TYPE_NUMBER;
 		ctx->calc_op.data_size	= IBV_EXP_CALC_DATA_SIZE_NUMBER;
 
@@ -901,9 +985,7 @@ struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev, int size,
 					  ctx->calc_op.data_size,
 					  &op_per_gather, &max_num_op);
 		if (rc) {
-			fprintf(stderr, "-E- operation not supported on %s. valid ops are:\n",
-				ibv_get_device_name(ib_dev));
-
+			fprintf(stderr, "-E- operation not supported on %s. valid ops are:\n", ibv_get_device_name(ib_dev));
 			pp_print_dev_calc_ops(ctx->context);
 			goto clean_mr;
 		}
@@ -914,8 +996,7 @@ struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev, int size,
 		}
 	}
 
-	ctx->cq = ibv_create_cq(ctx->context, rx_depth + 1, NULL,
-				ctx->channel, 0);
+	ctx->cq = ibv_create_cq(ctx->context, rx_depth + 1, NULL, ctx->channel, 0);
 	if (!ctx->cq) {
 		fprintf(stderr, "Couldn't create CQ\n");
 		goto clean_gather_list;
@@ -964,8 +1045,7 @@ struct pingpong_context *pp_init_ctx(struct ibv_device *ib_dev, int size,
 
 	}
 
-	ctx->mcq = ibv_create_cq(ctx->context, rx_depth + 1, NULL,
-				ctx->channel, 0);
+	ctx->mcq = ibv_create_cq(ctx->context, rx_depth + 1, NULL, ctx->channel, 0);
 	if (!ctx->mcq) {
 		fprintf(stderr, "Couldn't create CQ for MQP\n");
 		goto clean_qp;
@@ -1152,7 +1232,7 @@ static int pp_post_send(struct pingpong_context *ctx)
 		.exp_send_flags	= IBV_EXP_SEND_SIGNALED,
 	};
 	struct ibv_exp_send_wr *bad_wr;
-	/* If this is a calc operation - set the required params in the wr */
+	// If this is a calc operation - set the required params in the wr
 	if (ctx->calc_op.opcode != IBV_EXP_CALC_OP_NUMBER) {
 		wr.exp_opcode  = IBV_EXP_WR_SEND;
 		wr.exp_send_flags |= IBV_EXP_SEND_WITH_CALC;
@@ -1262,7 +1342,7 @@ static int pp_update_last_result(struct pingpong_context *ctx,
 				enum pp_wr_data_type calc_data_type,
 				enum pp_wr_calc_op calc_opcode)
 {
-	/* EXEC_VERIFY derefence result parameter */
+	// EXEC_VERIFY dereference result parameter
 	uint64_t *dummy;
 
 	uint64_t *op1 = (uint64_t *)ctx->buf;
@@ -1282,12 +1362,12 @@ static void usage(const char *argv0)
 	printf("\n");
 	printf("Options:\n");
 	printf("  -p, --port=<port>		listen on/connect to port <port> (default 18515)\n");
-	printf("  -d, --ib-dev=<dev>		use IB device <dev> (default first device found)\n");
-	printf("  -i, --ib-port=<port>		use port <port> of IB device (default 1)\n");
+	printf("  -d, --ib-dev=<dev>	use IB device <dev> (default first device found)\n");
+	printf("  -i, --ib-port=<port>	use port <port> of IB device (default 1)\n");
 	printf("  -s, --size=<size>		size of message to exchange (default 4096 minimum 16)\n");
 	printf("  -m, --mtu=<size>		path MTU (default 1024)\n");
-	printf("  -r, --rx-depth=<dep>		number of receives to post at a time (default 500)\n");
-	printf("  -n, --iters=<iters>		number of exchanges (default 1000)\n");
+	printf("  -r, --rx-depth=<dep>	number of receives to post at a time (default 500)\n");
+	printf("  -n, --iters=<iters>	number of exchanges (default 1000)\n");
 	printf("  -l, --sl=<sl>			service level value\n");
 	printf("  -e, --events			sleep on CQ events (default poll)\n");
 	printf("  -c, --calc=<operation>	calc operation\n");
@@ -1298,183 +1378,245 @@ static void usage(const char *argv0)
 	printf("  -V, --verify			verify calc operations\n");
 }
 
-int main(int argc, char *argv[])
+int parse_command_line_args(int argc, char*argv[], struct test_params * app_params)
 {
+	// set defaults
+	set_default_test_params(app_params);
+
+	while (1) {
+			int c;
+
+			static struct option long_options[] = {
+				{ .name = "port",	.has_arg = 1, .val = 'p' },
+				{ .name = "ib-dev",	.has_arg = 1, .val = 'd' },
+				{ .name = "ib-port",	.has_arg = 1, .val = 'i' },
+				{ .name = "size",	.has_arg = 1, .val = 's' },
+				{ .name = "mtu",	.has_arg = 1, .val = 'm' },
+				{ .name = "rx-depth",   .has_arg = 1, .val = 'r' },
+				{ .name = "iters",	.has_arg = 1, .val = 'n' },
+				{ .name = "sl",		.has_arg = 1, .val = 'l' },
+				{ .name = "events",	.has_arg = 0, .val = 'e' },
+				{ .name = "calc",	.has_arg = 1, .val = 'c' },
+				{ .name = "op_type",	.has_arg = 1, .val = 't' },
+				{ .name = "operands",   .has_arg = 1, .val = 'o' },
+				{ .name = "poll_mqe",   .has_arg = 0, .val = 'w' },
+				{ .name = "verbose",	.has_arg = 0, .val = 'v' },
+				{ .name = "verify",	.has_arg = 0, .val = 'V' },
+				{ 0 }
+			};
+
+			c = getopt_long(argc, argv, "p:d:i:s:m:r:n:l:et:c:o:wfvV", long_options, NULL);
+			if (c == -1)
+				break;
+
+			switch (c) {
+			case 'p':
+				app_params->port = strtol(optarg, NULL, 0);
+				if (app_params->port < 0 || app_params->port > 65535) {
+					usage(argv[0]);
+					return 1;
+				}
+				break;
+
+			case 'd':
+				strncpy(app_params->ib_devname, optarg, sizeof(app_params->ib_devname));
+				//ib_devname = strdup(optarg);
+				break;
+
+			case 'i':
+				app_params->ib_port = strtol(optarg, NULL, 0);
+				if (app_params->ib_port < 0) {
+					usage(argv[0]);
+					return 1;
+				}
+				break;
+
+			case 's':
+				app_params->size = strtol(optarg, NULL, 0);
+				if (app_params->size < 16) {
+					usage(argv[0]);
+					return 1;
+				}
+				break;
+
+			case 'm':
+				app_params->mtu = pp_mtu_to_enum(strtol(optarg, NULL, 0));
+				if (app_params->mtu < 0) {
+					usage(argv[0]);
+					return 1;
+				}
+				break;
+
+			case 'r':
+				app_params->rx_depth = strtol(optarg, NULL, 0);
+				break;
+
+			case 'n':
+				app_params->iters = strtol(optarg, NULL, 0);
+				break;
+
+			case 'l':
+				break;
+
+			case 'v':
+				app_params->verbose = 1;
+				break;
+
+			case 'V':
+				app_params->verify = 1;
+				break;
+
+			case 'e':
+				app_params->use_event = 1;
+				break;
+
+			case 't':
+				app_params->calc_data_type = pp_str_to_data_type(optarg);
+				if (app_params->calc_data_type == PP_DATA_TYPE_INVALID) {
+					printf("-E- invalid data types. Valid values are:\n");
+					pp_print_data_type();
+					return 1;
+				}
+				break;
+
+			case 'o':
+				strncpy(app_params->calc_operands_str, optarg, sizeof(app_params->calc_operands_str));
+				break;
+
+			case 'c':
+				app_params->calc_opcode = pp_str_to_calc_op(optarg);
+				if (app_params->calc_opcode == PP_CALC_INVALID) {
+					printf("-E- invalid data types. Valid values are:\n");
+					pp_print_calc_op();
+					return 1;
+				}
+				break;
+
+			case 'w':
+				app_params->mqe_poll = 1;
+				break;
+
+			default:
+				usage(argv[0]);
+				return 1;
+			}
+		}
+
+
+
+		// calc and data type are mandatory
+		if (app_params->calc_opcode == PP_CALC_INVALID || app_params->calc_data_type == PP_DATA_TYPE_INVALID) {
+			fprintf(stderr, "Data type and calc operation must be specified\n");
+			return 1;
+		}
+
+		// Verify that all the parameters required for calc operation were set
+		// if (!calc_operands_str) {
+		if (strlen(app_params->calc_operands_str) == 0) {
+			fprintf(stderr, "Operands must be set for calc operation\n");
+			return 1;
+		}
+
+		if (optind == argc - 1) {
+			//servername = strdupa(argv[optind]);
+			strncpy(app_params->servername, argv[optind], sizeof(app_params->servername));
+		}
+		else if (optind < argc) {
+			usage(argv[0]);
+			return 1;
+		}
+
+		return 0;
+}
+
+// TBD:
+int have_mpi()
+{
+	return 1;
+}
+
+
+void dump_results(struct test_params * app_params, struct timeval		*start, struct timeval		*end)
+{
+	// only client results reported.
+	if (my_rank == 0) {
+		return;
+	}
+
+	float usec = (end->tv_sec - start->tv_sec) * 1000000 + (end->tv_usec - start->tv_usec);
+	long long bytes = (long long) app_params->size * app_params->iters * 2;
+	printf("%lld bytes in %.2f seconds = %.2f Mbit/sec\n", bytes, usec / 1000000.0, bytes * 8. / usec);
+	printf("opcode: %s datatype: %s , %d iters in %.2f seconds = %.2f usec/iter\n",
+			pp_wr_calc_op_str[app_params->calc_opcode],
+			pp_wr_data_type_str[app_params->calc_data_type].str,
+			app_params->iters,
+			usec / 1000000.0,
+			usec / app_params->iters);
+}
+
+
+#define QP_EXCHANGE_OVER_IB 1001
+#define QP_EXCHANGE_OVER_TCP 1002
+
+
+struct pingpong_dest * get_remote_dest(struct pingpong_context *ctx, int is_client, int qp_exchange_method, struct pingpong_dest	* my_dest)
+{
+	struct pingpong_dest	*rem_dest = NULL;
+
+	// The following is where lid/qpn/psn of the peer is exchanged
+	switch (qp_exchange_method)
+	{
+		case QP_EXCHANGE_OVER_TCP:
+			if (is_client) {
+				printf("client: connect to server: %s\n", app_params.servername);
+				rem_dest = pp_client_exch_dest(app_params.servername, app_params.port, my_dest);
+			}
+			else {
+				rem_dest = pp_server_exch_dest(ctx, app_params.ib_port, app_params.mtu, app_params.port, app_params.sl, my_dest);
+			}
+
+		break;
+		case QP_EXCHANGE_OVER_IB:
+			if (is_client) {
+				printf("%s: client: connect to server: %s\n", hostname, app_params.servername);
+				rem_dest = pp_exch_dest_ib(ctx, my_dest, 0);
+			}
+			else {
+				rem_dest = pp_exch_dest_ib(ctx, my_dest, 1);
+				if (rem_dest != NULL) {
+					pp_connect_ctx(ctx, ctx->qp, app_params.ib_port, my_dest->psn, app_params.mtu, app_params.sl, rem_dest);
+				}
+			}
+		break;
+		default:
+			fprintf(stderr, "%s : Should never get here.  qp info must be exchanged either over TCP or over IB.", __FUNCTION__);
+			return NULL;
+		break;
+	}
+	return rem_dest;
+}
+
+int run_pingpong_app(int is_client, int qp_exchange_method)
+{
+	//fprintf(stderr, "Entered %s  host=%s  rank=%d\n", __FUNCTION__, hostname, my_rank);
 	struct ibv_device	**dev_list;
 	struct ibv_device	*ib_dev = NULL;
 	struct pingpong_context *ctx;
 	struct pingpong_dest	my_dest;
 	struct pingpong_dest	*rem_dest = NULL;
 	struct timeval		start, end;
-	char			*ib_devname = NULL;
-	char			*servername = NULL;
-	int			port = 18515;
-	int			ib_port = 1;
-	int			size = 4096;
 
-	enum ibv_mtu		mtu = IBV_MTU_1024;
-	int			rx_depth = 500;
-	int			iters = 1000;
 	int			routs;
 	int			num_cq_events = 0;
-	int			sl = 0;
 	int			rcnt, scnt;
-	int			use_event = 0;
-	int			mqe_poll = 0;
-	int			verbose = 0;
-	int			verify = 0;
-
 	struct calc_unpack_input params;
-
-	enum		pp_wr_data_type	calc_data_type = PP_DATA_TYPE_INVALID;
-	enum		pp_wr_calc_op	calc_opcode = PP_CALC_INVALID;
-	char		*calc_operands_str = NULL;
 	struct		ibv_wc wc[2];
 	int		ne, i, ret = 0;
 
+	memset(&params, 0, sizeof(params));
 	srand48(getpid() * time(NULL));
 
 	page_size = sysconf(_SC_PAGESIZE);
-
-	while (1) {
-		int c;
-
-		static struct option long_options[] = {
-			{ .name = "port",	.has_arg = 1, .val = 'p' },
-			{ .name = "ib-dev",	.has_arg = 1, .val = 'd' },
-			{ .name = "ib-port",	.has_arg = 1, .val = 'i' },
-			{ .name = "size",	.has_arg = 1, .val = 's' },
-			{ .name = "mtu",	.has_arg = 1, .val = 'm' },
-			{ .name = "rx-depth",   .has_arg = 1, .val = 'r' },
-			{ .name = "iters",	.has_arg = 1, .val = 'n' },
-			{ .name = "sl",		.has_arg = 1, .val = 'l' },
-			{ .name = "events",	.has_arg = 0, .val = 'e' },
-			{ .name = "calc",	.has_arg = 1, .val = 'c' },
-			{ .name = "op_type",	.has_arg = 1, .val = 't' },
-			{ .name = "operands",   .has_arg = 1, .val = 'o' },
-			{ .name = "poll_mqe",   .has_arg = 0, .val = 'w' },
-			{ .name = "verbose",	.has_arg = 0, .val = 'v' },
-			{ .name = "verify",	.has_arg = 0, .val = 'V' },
-			{ 0 }
-		};
-
-		c = getopt_long(argc, argv, "p:d:i:s:m:r:n:l:et:c:o:wfvV", long_options, NULL);
-		if (c == -1)
-			break;
-
-		switch (c) {
-		case 'p':
-			port = strtol(optarg, NULL, 0);
-			if (port < 0 || port > 65535) {
-				usage(argv[0]);
-				return 1;
-			}
-			break;
-
-		case 'd':
-			ib_devname = strdupa(optarg);
-			break;
-
-		case 'i':
-			ib_port = strtol(optarg, NULL, 0);
-			if (ib_port < 0) {
-				usage(argv[0]);
-				return 1;
-			}
-			break;
-
-		case 's':
-			size = strtol(optarg, NULL, 0);
-			if (size < 16) {
-				usage(argv[0]);
-				return 1;
-			}
-			break;
-
-		case 'm':
-			mtu = pp_mtu_to_enum(strtol(optarg, NULL, 0));
-			if (mtu < 0) {
-				usage(argv[0]);
-				return 1;
-			}
-			break;
-
-		case 'r':
-			rx_depth = strtol(optarg, NULL, 0);
-			break;
-
-		case 'n':
-			iters = strtol(optarg, NULL, 0);
-			break;
-
-		case 'l':
-			sl = strtol(optarg, NULL, 0);
-			break;
-
-		case 'v':
-			verbose = 1;
-			break;
-
-		case 'V':
-			verify = 1;
-			break;
-
-		case 'e':
-			++use_event;
-			break;
-
-		case 't':
-			calc_data_type = pp_str_to_data_type(optarg);
-			if (calc_data_type == PP_DATA_TYPE_INVALID) {
-				printf("-E- invalid data types. Valid values are:\n");
-				pp_print_data_type();
-				return 1;
-			}
-			break;
-
-		case 'o':
-			calc_operands_str = strdup(optarg);
-			break;
-
-		case 'c':
-			calc_opcode = pp_str_to_calc_op(optarg);
-			if (calc_opcode == PP_CALC_INVALID) {
-				printf("-E- invalid data types. Valid values are:\n");
-				pp_print_calc_op();
-				return 1;
-			}
-			break;
-
-		case 'w':
-			mqe_poll = 1;
-			break;
-
-		default:
-			usage(argv[0]);
-			return 1;
-		}
-	}
-
-	memset(&params, 0, sizeof(params));
-
-	/* calc and data type are mandatory */
-	if (calc_opcode == PP_CALC_INVALID || calc_data_type == PP_DATA_TYPE_INVALID) {
-		fprintf(stderr, "Data type and calc operation must be specified\n");
-		return 1;
-	}
-
-	/* Verify that all the parameters required for calc operation were set */
-	if (!calc_operands_str) {
-		fprintf(stderr, "Operands must be set for calc operation\n");
-		return 1;
-	}
-
-	if (optind == argc - 1)
-		servername = strdupa(argv[optind]);
-	else if (optind < argc) {
-		usage(argv[0]);
-		return 1;
-	}
 
 	dev_list = ibv_get_device_list(NULL);
 	if (!dev_list) {
@@ -1482,31 +1624,39 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	if (ib_devname) {
+	if (app_params.ib_devname[0] != 0) {
 		int i;
 
 		for (i = 0; dev_list[i]; ++i) {
-			if (!strcmp(ibv_get_device_name(dev_list[i]), ib_devname)) {
+			if (!strcmp(ibv_get_device_name(dev_list[i]), app_params.ib_devname)) {
 				ib_dev = dev_list[i];
 				break;
 			}
 		}
 		if (!ib_dev) {
-			fprintf(stderr, "IB device %s not found\n", ib_devname);
+			fprintf(stderr, "IB device %s not found\n", app_params.ib_devname);
 			return 1;
 		}
-	} else
+	} else {
 		ib_dev = *dev_list;
+	}
 
-	ctx = pp_init_ctx(ib_dev, size, rx_depth, ib_port, use_event,
-			  calc_opcode, calc_data_type, calc_operands_str);
+	ctx = pp_init_ctx(ib_dev, app_params.size,
+							  app_params.rx_depth,
+							  app_params.ib_port,
+							  app_params.use_event,
+			                  app_params.calc_opcode,
+							  app_params.calc_data_type,
+							  app_params.calc_operands_str);
 	if (!ctx)
 		return 1;
 
-	if (servername)
-		pp_update_last_result(ctx, calc_data_type, calc_opcode);
-	else
+	if (is_client) {
+		pp_update_last_result(ctx, app_params.calc_data_type, app_params.calc_opcode);
+	}
+	else {
 		ctx->last_result = *(uint64_t *)ctx->buf;
+	}
 
 	routs = pp_post_recv(ctx, ctx->rx_depth);
 	if (routs < ctx->rx_depth) {
@@ -1515,14 +1665,14 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	if (use_event)
+	if (app_params.use_event)
 		if (ibv_req_notify_cq(ctx->cq, 0)) {
 			fprintf(stderr, "Couldn't request CQ notification\n");
 			ret = 1;
 			goto out;
 		}
 
-	my_dest.lid = pp_get_local_lid(ctx->context, ib_port);
+	my_dest.lid = pp_get_local_lid(ctx->context, app_params.ib_port);
 	my_dest.qpn = ctx->qp->qp_num;
 	my_dest.psn = lrand48() & 0xffffff;
 	if (!my_dest.lid) {
@@ -1531,36 +1681,31 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	printf("  local address:  LID 0x%04x, QPN 0x%06x, PSN 0x%06x  : MQPN 0x%06x\n",
-		   my_dest.lid, my_dest.qpn, my_dest.psn, ctx->mqp->qp_num);
+	printf("%s  local address:  LID 0x%04x, QPN 0x%06x, PSN 0x%06x  : MQPN 0x%06x\n", hostname, my_dest.lid, my_dest.qpn, my_dest.psn, ctx->mqp->qp_num);
 
-	if (servername)
-		rem_dest = pp_client_exch_dest(servername, port, &my_dest);
-	else
-		rem_dest = pp_server_exch_dest(ctx, ib_port, mtu, port, sl, &my_dest);
-
-	if (!rem_dest) {
+	rem_dest = (struct pingpong_dest *) get_remote_dest(ctx, is_client, qp_exchange_method, &my_dest);
+	if (rem_dest == NULL) {
+		fprintf(stderr, "Failed to exchange data with remote destination\n");
 		ret = 1;
 		goto out;
 	}
 
-	printf("  remote address: LID 0x%04x, QPN 0x%06x, PSN 0x%06x\n",
-		   rem_dest->lid, rem_dest->qpn, rem_dest->psn);
+	printf("%s  remote address: LID 0x%04x, QPN 0x%06x, PSN 0x%06x\n", hostname, rem_dest->lid, rem_dest->qpn, rem_dest->psn);
 
-	if (servername)
-		if (pp_connect_ctx(ctx, ctx->qp, ib_port, my_dest.psn, mtu, sl, rem_dest)) {
+	if (is_client)
+		if (pp_connect_ctx(ctx, ctx->qp, app_params.ib_port, my_dest.psn, app_params.mtu, app_params.sl, rem_dest)) {
 			ret = 1;
 			goto out;
 		}
 
-	if (mqe_poll) {
+	if (app_params.mqe_poll) {
 		struct pingpong_dest loop_dest;
 
 		loop_dest.lid = my_dest.lid;
 		loop_dest.psn = my_dest.psn;
 		loop_dest.qpn = ctx->mqp->qp_num;
 
-		if (pp_connect_ctx(ctx, ctx->mqp, ib_port, my_dest.psn, mtu, sl, &loop_dest)) {
+		if (pp_connect_ctx(ctx, ctx->mqp, app_params.ib_port, my_dest.psn, app_params.mtu, app_params.sl, &loop_dest)) {
 			fprintf(stderr, "failed moving mqp to RTS\n");
 			ret = 1;
 			goto out;
@@ -1569,27 +1714,24 @@ int main(int argc, char *argv[])
 
 	ctx->pending = PP_RECV_WRID;
 
-	if (servername) {
+	if (is_client) {
 		if (pp_post_send(ctx)) {
-			fprintf(stderr, "Couldn't post send\n");
+			fprintf(stderr, "Couldn't post send: errno=%d  %s.\n", errno, strerror(errno));
 			ret = 1;
 			goto out;
 		}
 		ctx->pending |= PP_SEND_WRID;
-
 	}
 
 	if (gettimeofday(&start, NULL)) {
 		perror("gettimeofday");
 		ret = 1;
 		goto out;
-
 	}
 
-
 	rcnt = scnt = 0;
-	while (rcnt < iters || scnt < iters) {
-		if (use_event) {
+	while (rcnt < app_params.iters || scnt < app_params.iters) {
+		if (app_params.use_event) {
 			struct ibv_cq *ev_cq;
 			void		  *ev_ctx;
 
@@ -1614,7 +1756,7 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		if (mqe_poll) {
+		if (app_params.mqe_poll) {
 			int ne;
 
 			if (pp_post_ext_wqe(ctx, IBV_EXP_WR_CQE_WAIT)) {
@@ -1638,7 +1780,7 @@ int main(int argc, char *argv[])
 				ret = 1;
 				goto out;
 			}
-		} while (!use_event && ne < 1);
+		} while (!app_params.use_event && ne < 1);
 
 		for (i = 0; i < ne; ++i) {
 			if (wc[i].status != IBV_WC_SUCCESS) {
@@ -1656,8 +1798,8 @@ int main(int argc, char *argv[])
 				break;
 
 			case PP_RECV_WRID:
-				params.op = calc_opcode;
-				params.type = calc_data_type;
+				params.op = app_params.calc_opcode;
+				params.type = app_params.calc_data_type;
 				params.net_buf = ctx->net_buf;
 				params.id = NULL;
 				params.host_buf = ctx->buf;
@@ -1665,9 +1807,9 @@ int main(int argc, char *argv[])
 				if (pp_unpack_data_from_calc(ctx->context, &params))
 					fprintf(stderr, "Error in unpack \n");
 
-				if (verbose) {
+				if (app_params.verbose) {
 
-					switch (calc_data_type) {
+					switch (app_params.calc_data_type) {
 					case PP_DATA_TYPE_INT32:
 					case PP_DATA_TYPE_INT64:
 					case PP_DATA_TYPE_UINT32:
@@ -1684,26 +1826,23 @@ int main(int argc, char *argv[])
 						break;
 
 					default:
-						 printf("incoming data is 0%016" PRIu64 "\n",
-							*(uint64_t *)ctx->buf);
+						 printf("incoming data is 0%016" PRIu64 "\n", *(uint64_t *)ctx->buf);
 					}
 				}
-				if (verify) {
-					if (pp_calc_verify(ctx, calc_data_type, calc_opcode)) {
+				if (app_params.verify) {
+					if (pp_calc_verify(ctx, app_params.calc_data_type, app_params.calc_opcode)) {
 						fprintf(stderr, "Calc verification failed\n");
 						ret = 1;
 						goto out;
 					}
 				}
-				pp_update_last_result(ctx, calc_data_type, calc_opcode);
+				pp_update_last_result(ctx, app_params.calc_data_type, app_params.calc_opcode);
 
 				if (--routs <= 1) {
 					routs += pp_post_recv(ctx, ctx->rx_depth - routs);
 
 					if (routs < ctx->rx_depth) {
-						fprintf(stderr,
-							"Couldn't post receive (%d)\n",
-							routs);
+						fprintf(stderr, "Couldn't post receive (%d)\n", routs);
 						ret = 1;
 						goto out;
 					}
@@ -1720,16 +1859,16 @@ int main(int argc, char *argv[])
 			}
 
 			ctx->pending &= ~(int)wc[i].wr_id;
-			if (scnt < iters && !ctx->pending) {
+			if (scnt < app_params.iters && !ctx->pending) {
 				if (pp_post_send(ctx)) {
-					fprintf(stderr, "Couldn't post send\n");
+					fprintf(stderr, "Couldn't post send: errno=%d  %s.\n", errno, strerror(errno));
 					ret = 1;
 					goto out;
 				}
 				ctx->pending = PP_RECV_WRID | PP_SEND_WRID;
 			}
-		} /* for (i = 0; i < ne; ++i) */
-	} /* while (rcnt < iters || scnt < iters) */
+		} // for (i = 0; i < ne; ++i)
+	} // while (rcnt < iters || scnt < iters)
 
 	if (gettimeofday(&end, NULL)) {
 		perror("gettimeofday");
@@ -1737,26 +1876,91 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	{
-		float usec = (end.tv_sec - start.tv_sec) * 1000000 +
-			(end.tv_usec - start.tv_usec);
-		long long bytes = (long long) size * iters * 2;
-
-		printf("%lld bytes in %.2f seconds = %.2f Mbit/sec\n",
-			   bytes, usec / 1000000., bytes * 8. / usec);
-		printf("%d iters in %.2f seconds = %.2f usec/iter\n",
-			   iters, usec / 1000000., usec / iters);
-	}
+	dump_results(&app_params, &start, &end);
 
 	ibv_ack_cq_events(ctx->cq, num_cq_events);
 out:
 	ret = pp_close_ctx(ctx);
 
 	ibv_free_device_list(dev_list);
-	if (calc_operands_str)
-		free(calc_operands_str);
 
 	free(rem_dest);
 
 	return ret;
+}
+
+
+
+int run_mpi(int argc, char **argv)
+{
+#if HAVE_MPI
+    int num_ranks;
+    int ret;
+
+    // Don't try MPI when running interactively
+    if (isatty(0)) {
+        return -ENOTSUP;
+    }
+
+    ret = MPI_Init(&argc, &argv);
+    if (ret != 0) {
+        return -ENOTSUP;
+    }
+
+    // Use MPI only if we have at least 2 ranks
+    MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
+    if (num_ranks == 1) {
+        ret = -ENOTSUP;
+        goto out;
+    }
+
+    MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    if (my_rank < 2) {
+    	// 0 is server
+    	// 1 is client
+    	ret = run_pingpong_app(my_rank, QP_EXCHANGE_OVER_IB);
+    } else {
+    	fprintf(stderr, "%s Rank %d waiting in barrier.  only 2 ranks supported\n", hostname, my_rank);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+out:
+    MPI_Finalize();
+    return ret;
+#else
+    return -ENOTSUP;
+#endif
+}
+
+
+int run_standalone(int argc, char **argv)
+{
+	int is_client = (app_params.servername[0] != 0);  // when run interactively, client gets server name from command line.
+	my_rank = is_client ? 1 : 0;
+
+	int ret = run_pingpong_app(is_client, QP_EXCHANGE_OVER_TCP);
+    return ret;
+}
+
+int main(int argc, char **argv)
+{
+    int ret;
+
+    gethostname(hostname, sizeof hostname);
+
+    ret = parse_command_line_args(argc, argv, &app_params);
+    if (ret != 0) {
+		fprintf(stderr, "Error parsing command line arguments");
+		exit(0);
+    }
+
+    ret = run_mpi(argc, argv);
+    if (ret == -ENOTSUP) {
+        return run_standalone(argc, argv);
+    } else {
+        return ret;
+    }
 }
