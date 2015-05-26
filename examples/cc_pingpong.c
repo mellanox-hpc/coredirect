@@ -1529,12 +1529,6 @@ int parse_command_line_args(int argc, char*argv[], struct test_params * app_para
 		return 0;
 }
 
-// TBD:
-int have_mpi()
-{
-	return 1;
-}
-
 
 void dump_results(struct test_params * app_params, struct timeval		*start, struct timeval		*end)
 {

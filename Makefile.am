@@ -1,11 +1,12 @@
 AM_CPPFLAGS = -I$(srcdir)/include
 ACLOCAL_AMFLAGS = -I config
-AM_CFLAGS = -g -Wall -Werror
+AM_CFLAGS = -g -Wall -Werror -I.
 
-bin_PROGRAMS = examples/ibv_cc_pingpong examples/ibv_task_pingpong tests/ibv_cc_test
+bin_PROGRAMS = examples/ibv_cc_pingpong examples/ibv_task_pingpong examples/ibv_cc_barrier tests/ibv_cc_test
 
 examples_ibv_cc_pingpong_SOURCES = examples/cc_pingpong.c
 examples_ibv_task_pingpong_SOURCES = examples/task_pingpong.c
+examples_ibv_cc_barrier_SOURCES = examples/cc_main.c
 
 tests_ibv_cc_test_CXXFLAGS = -g -Wall -O3 -fno-strict-aliasing
 

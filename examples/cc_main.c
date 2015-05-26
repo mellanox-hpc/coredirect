@@ -108,7 +108,7 @@ enum {
 };
 
 static uint32_t __debug_mask = 1;
-static __my_proc = 0;
+static int  __my_proc = 0;
 
 #define log_fatal(fmt, ...)  \
 	do {                                                           \
@@ -277,7 +277,7 @@ static int __init_ctx( struct cc_context *ctx )
 		log_fatal("ibv_create_cq failed\n");
 
 	{
-		struct ibv_qp_init_attr_ex init_attr;
+		struct ibv_exp_qp_init_attr init_attr;
 		struct ibv_qp_attr attr;
 
 		memset(&init_attr, 0, sizeof(init_attr));
@@ -296,9 +296,9 @@ static int __init_ctx( struct cc_context *ctx )
 		init_attr.pd = ctx->pd;
 
 		{
-			init_attr.comp_mask |= IBV_QP_INIT_ATTR_CREATE_FLAGS | IBV_QP_INIT_ATTR_PD;
-			init_attr.create_flags = IBV_QP_CREATE_CROSS_CHANNEL;
-			ctx->mqp = ibv_create_qp_ex(ctx->ib_ctx, &init_attr);
+			init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_QP_INIT_ATTR_PD;
+			init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
+			ctx->mqp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
 		}
 		if (!ctx->mqp)
 			log_fatal("ibv_create_qp_ex failed\n");
@@ -393,8 +393,8 @@ static int __init_ctx( struct cc_context *ctx )
 		 */
 		log_trace("create QPs for peers ...\n");
 		{
-			struct ibv_cq_attr attr;
-			struct ibv_qp_init_attr_ex init_attr;
+			struct ibv_exp_cq_attr attr;
+			struct ibv_exp_qp_init_attr init_attr;
 
 
 			ctx->proc_array[i].scq = ctx->proc_array[ctx->conf.my_proc].scq;
@@ -403,12 +403,12 @@ static int __init_ctx( struct cc_context *ctx )
 			if (!ctx->proc_array[i].rcq)
 				log_fatal("ibv_create_cq failed\n");
 
-			attr.comp_mask            = IBV_CQ_ATTR_CQ_CAP_FLAGS;
+			attr.comp_mask            = IBV_EXP_CQ_ATTR_CQ_CAP_FLAGS;
 			attr.moderation.cq_count  = 0;
 			attr.moderation.cq_period = 0;
-			attr.cq_cap_flags         = IBV_CQ_IGNORE_OVERRUN;
+			attr.cq_cap_flags         = IBV_EXP_CQ_IGNORE_OVERRUN;
 
-			rc = ibv_modify_cq(ctx->proc_array[i].rcq, &attr, IBV_CQ_CAP_FLAGS);
+			rc = ibv_exp_modify_cq(ctx->proc_array[i].rcq, &attr, IBV_EXP_CQ_CAP_FLAGS);
 			if (rc)
 				log_fatal("ibv_modify_cq failed\n");
 
@@ -428,9 +428,9 @@ static int __init_ctx( struct cc_context *ctx )
 			init_attr.pd = ctx->pd;
 
 			{
-				init_attr.comp_mask |= IBV_QP_INIT_ATTR_CREATE_FLAGS | IBV_QP_INIT_ATTR_PD;
-				init_attr.create_flags = IBV_QP_CREATE_CROSS_CHANNEL | IBV_QP_CREATE_MANAGED_SEND | IBV_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_QP_CREATE_IGNORE_RQ_OVERFLOW;
-				ctx->proc_array[i].qp = ibv_create_qp_ex(ctx->ib_ctx, &init_attr);
+				init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_QP_INIT_ATTR_PD;
+				init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
+				ctx->proc_array[i].qp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
 			}
 			if (!ctx->proc_array[i].qp)
 				log_fatal("ibv_create_qp_ex failed\n");
@@ -463,13 +463,13 @@ static int __init_ctx( struct cc_context *ctx )
 			ctx->proc_array[i].info.vaddr = ntohll(remote_info.vaddr);
 			ctx->proc_array[i].info.rkey = ntohl(remote_info.rkey);
 
-			log_trace("local     info: lid = %d qpn = %d psn = %d vaddr = 0x%x rkey = %d\n",
+			log_trace("local     info: lid = %d qpn = %d psn = %d vaddr = 0x%lx rkey = %d\n",
 					ntohs(local_info.lid),
 					ntohl(local_info.qpn),
 					ntohl(local_info.psn),
 					ntohll(local_info.vaddr),
 					ntohl(local_info.rkey));
-			log_trace("peer(#%d) info: lid = %d qpn = %d psn = %d vaddr = 0x%x rkey = %d\n",
+			log_trace("peer(#%d) info: lid = %d qpn = %d psn = %d vaddr = 0x%lx rkey = %d\n",
 					i,
 					ctx->proc_array[i].info.lid,
 					ctx->proc_array[i].info.qpn,
@@ -555,7 +555,7 @@ static int __init_ctx( struct cc_context *ctx )
 /*
  * This is a place to include new algorithms
  */
-#include <cc_barrier.h>
+#include "cc_barrier.h"
 
 static void __usage(const char *argv)
 {
