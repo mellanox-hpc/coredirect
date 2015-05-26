@@ -51,6 +51,7 @@ fi
 
 dnl Checks for libraries
 AC_CHECK_LIB([ibverbs], [ibv_get_device_list], [], [AC_MSG_ERROR([libibverbs not found])])
+AC_CHECK_LIB([ibumad], [umad_init], [], AC_MSG_ERROR([libibumad not found]))
 
 AC_CHECK_LIB(dl, dlsym, [],
     AC_MSG_ERROR([dlsym() not found.  coredirect requires libdl.]))
