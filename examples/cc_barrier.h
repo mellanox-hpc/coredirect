@@ -5,7 +5,7 @@
 
 static struct {
 	struct ibv_exp_send_wr *wr;
-	struct ibv_exp_wc *wc;
+	struct ibv_wc *wc;
 	int total_round;
 	int num_proc_basic_group;
 	int cur_iteration;
@@ -38,7 +38,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
 		wr.wr_id = cur_round;
 		wr.next = NULL;
 		wr.exp_opcode = IBV_EXP_WR_CQE_WAIT;
-		wr.exp_send_flags = IBV_SEND_SIGNALED | IBV_EXP_SEND_WAIT_EN_LAST;
+		wr.exp_send_flags = IBV_EXP_SEND_SIGNALED | IBV_EXP_SEND_WAIT_EN_LAST;
 		wr.task.cqe_wait.cq = ctx->proc_array[peer_id].rcq;
 		wr.task.cqe_wait.cq_count = 1;
 
@@ -70,7 +70,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
 		/* Post SEND to a peer */
 		__alg_obj.wr[3 * cur_round + 0].wr_id = cur_round;
 		__alg_obj.wr[3 * cur_round + 0].next = NULL;
-		__alg_obj.wr[3 * cur_round + 0].exp_opcode = IBV_WR_SEND;
+		__alg_obj.wr[3 * cur_round + 0].exp_opcode = IBV_EXP_WR_SEND;
 
 		rc = ibv_exp_post_send(ctx->proc_array[peer_id].qp, &__alg_obj.wr[3 * cur_round + 0], &wr_bad);
 		if (rc)
@@ -89,7 +89,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
 		__alg_obj.wr[3 * cur_round + 2].wr_id = cur_round;
 		__alg_obj.wr[3 * cur_round + 2].next = NULL;
 		__alg_obj.wr[3 * cur_round + 2].exp_opcode = IBV_EXP_WR_CQE_WAIT;
-		__alg_obj.wr[3 * cur_round + 2].exp_send_flags = IBV_SEND_SIGNALED | IBV_EXP_SEND_WAIT_EN_LAST;
+		__alg_obj.wr[3 * cur_round + 2].exp_send_flags = IBV_EXP_SEND_SIGNALED | IBV_EXP_SEND_WAIT_EN_LAST;
 		__alg_obj.wr[3 * cur_round + 2].task.cqe_wait.cq = ctx->proc_array[peer_id].rcq;
 		__alg_obj.wr[3 * cur_round + 2].task.cqe_wait.cq_count = 1;
 
@@ -113,7 +113,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
 		memset(&wr, 0, sizeof(wr));
 		wr.wr_id = cur_round;
 		wr.next = NULL;
-		wr.exp_opcode = IBV_WR_SEND;
+		wr.exp_opcode = IBV_EXP_WR_SEND;
 
 		rc = ibv_exp_post_send(ctx->proc_array[peer_id].qp, &wr, &wr_bad);
 		if (rc)
@@ -144,7 +144,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
 				+ (cur_time.tv_usec / 1000);
 
 		do {
-			rc = ibv_exp_poll_cq(ctx->mcq, __alg_obj.total_round, __alg_obj.wc, 1);
+			rc = ibv_poll_cq(ctx->mcq, __alg_obj.total_round, __alg_obj.wc);
 			if (rc >= 0)
 				ne += rc;
 			else
@@ -199,7 +199,7 @@ static int __algorithm_recursive_doubling_setup( void *context )
 	int rc = 0;
 	struct cc_context *ctx = context;
 	struct ibv_exp_send_wr *wr;
-	struct ibv_exp_wc *wc;
+	struct ibv_wc *wc;
 	int total_round = 0;
 	int num_proc_basic_group = 0;
 
@@ -217,7 +217,7 @@ static int __algorithm_recursive_doubling_setup( void *context )
 		log_fatal("can not allocate memory for WRs\n");
 	memset(wr, 0, 3 * total_round * sizeof(*wr));
 
-	wc = (struct ibv_exp_wc *)malloc(total_round * sizeof(*wc));
+	wc = (struct ibv_wc *)malloc(total_round * sizeof(*wc));
 	if (!wc)
 		log_fatal("can not allocate memory for WCs\n");
 	memset(wc, 0, total_round * sizeof(*wc));
