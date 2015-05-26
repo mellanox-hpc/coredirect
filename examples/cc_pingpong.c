@@ -22,11 +22,11 @@
 #include <math.h>
 #include <infiniband/arch.h>
 
+#include "../config.h"
 #include "cc_pingpong.h"
 
-#define HAVE_MPI 1
 
-#if HAVE_MPI
+#ifdef HAVE_MPICC
 #include <mpi.h>
 #endif
 
@@ -563,6 +563,7 @@ static int pp_connect_ctx(struct pingpong_context *ctx,
 // -------------------------------------------------------------------------------
 
 
+#ifdef HAVE_MPICC
 
 static struct pingpong_dest *pp_exch_dest_ib(struct pingpong_context *ctx, const struct pingpong_dest *my_dest, int peer_proc)
 {
@@ -590,6 +591,8 @@ static struct pingpong_dest *pp_exch_dest_ib(struct pingpong_context *ctx, const
 out:
 	return rem_dest;
 }
+
+#endif
 
 static struct pingpong_dest *pp_client_exch_dest(const char *servername,
 						   int port,
@@ -1570,6 +1573,8 @@ struct pingpong_dest * get_remote_dest(struct pingpong_context *ctx, int is_clie
 			}
 
 		break;
+
+#ifdef HAVE_MPICC
 		case QP_EXCHANGE_OVER_IB:
 			if (is_client) {
 				printf("%s: client: connect to server: %s\n", hostname, app_params.servername);
@@ -1582,6 +1587,7 @@ struct pingpong_dest * get_remote_dest(struct pingpong_context *ctx, int is_clie
 				}
 			}
 		break;
+#endif
 		default:
 			fprintf(stderr, "%s : Should never get here.  qp info must be exchanged either over TCP or over IB.", __FUNCTION__);
 			return NULL;
@@ -1887,7 +1893,7 @@ out:
 
 int run_mpi(int argc, char **argv)
 {
-#if HAVE_MPI
+#ifdef HAVE_MPICC
     int num_ranks;
     int ret;
 

@@ -22,8 +22,12 @@
 #include <infiniband/arch.h>
 #include <infiniband/umad.h>
 
+#include "../config.h"
+
 /* MPI should be used for this version */
+#ifdef HAVE_MPICC
 #define USE_MPI		1
+#endif
 
 #if defined(USE_MPI)
 #include <mpi.h>
@@ -37,7 +41,7 @@
 		"\nThis example is based on Infiniband VERBS API," \
 		"\nand demonstrates usage of Cross-Channel operations" \
 		"\non different collective algorithms" \
-		"\nsee http://www.mellanox.com/ and http://www.openfabrics.org"
+		"\nsee http://www.mellanox.com and http://www.openfabrics.org"
 
 #define QUOTE(name) #name
 #define STR(macro) QUOTE(macro)
@@ -598,6 +602,9 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 	MPI_Comm_rank(MPI_COMM_WORLD, &ctx->conf.my_proc);
 	MPI_Comm_size(MPI_COMM_WORLD, &ctx->conf.num_proc);
 	__my_proc = ctx->conf.my_proc;
+
+#else
+	logtrace("Compiled without mpi");
 #endif
 
 	while (1) {
@@ -786,15 +793,16 @@ int main(int argc, char *argv[])
 			__timer(&end_time);
 
 			sleep(3);
-
-			log_info("Title                : %s\n", ctx->conf.algorithm->name);
-			log_info("Description          : %s\n", ctx->conf.algorithm->note);
-			log_info("Number of processes  : %d\n", ctx->conf.num_proc);
-			log_info("Iterations           : %d\n", ctx->conf.iters);
-			log_info("Time wall total      : %0.4f seconds\n", (end_time.wall - start_time.wall) / 1000000.0);
-			log_info("Time cpus total      : %0.4f seconds\n", (end_time.cpus - start_time.cpus) / 1000000.0);
-			log_info("Time wall (op/usec)  : %0.4f usec\n", (end_time.wall - start_time.wall) / (double)ctx->conf.iters);
-			log_info("Time cpus (op/usec)  : %0.4f usec\n", (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters);
+			if (ctx->conf.my_proc == 0) {
+				log_info("Title                : %s\n", ctx->conf.algorithm->name);
+				log_info("Description          : %s\n", ctx->conf.algorithm->note);
+				log_info("Number of processes  : %d\n", ctx->conf.num_proc);
+				log_info("Iterations           : %d\n", ctx->conf.iters);
+				log_info("Time wall total      : %0.4f seconds\n", (end_time.wall - start_time.wall) / 1000000.0);
+				log_info("Time cpus total      : %0.4f seconds\n", (end_time.cpus - start_time.cpus) / 1000000.0);
+				log_info("Time wall (usec/op)  : %0.4f usec\n", (end_time.wall - start_time.wall) / (double)ctx->conf.iters);
+				log_info("Time cpus (usec/op)  : %0.4f usec\n", (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters);
+			}
 		}
 
 		if (!rc && ctx->conf.algorithm->close) {

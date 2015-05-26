@@ -19,6 +19,7 @@
 #include <arpa/inet.h>
 #include <time.h>
 
+#include "../config.h"
 #include "cc_pingpong.h"
 
 
@@ -36,7 +37,7 @@ char *wr_id_str[] = {
 
 #define HAVE_MPI 1
 
-#if HAVE_MPI
+#if HAVE_MPICC
 #include <mpi.h>
 #endif
 
@@ -186,7 +187,7 @@ static int pp_connect_ctx(struct pingpong_context *ctx,
 // -------------------------------------------------------------------------------
 
 
-
+#ifdef HAVE_MPICC
 static struct pingpong_dest *pp_exch_dest_ib(struct pingpong_context *ctx, const struct pingpong_dest *my_dest, int peer_proc)
 {
 	struct pingpong_dest *rem_dest = NULL;
@@ -213,7 +214,7 @@ static struct pingpong_dest *pp_exch_dest_ib(struct pingpong_context *ctx, const
 out:
 	return rem_dest;
 }
-
+#endif
 
 
 static struct pingpong_dest *pp_client_exch_dest(const char *servername,
@@ -413,6 +414,7 @@ struct pingpong_dest * get_remote_dest(struct pingpong_context *ctx, int is_clie
 			}
 
 		break;
+#ifdef HAVE_MPICC
 		case QP_EXCHANGE_OVER_IB:
 			if (is_client) {
 				printf("%s: client: connect to server: %s\n", hostname, app_params.servername);
@@ -425,6 +427,7 @@ struct pingpong_dest * get_remote_dest(struct pingpong_context *ctx, int is_clie
 				}
 			}
 		break;
+#endif
 		default:
 			fprintf(stderr, "%s : Should never get here.  qp info must be exchanged either over TCP or over IB.", __FUNCTION__);
 			return NULL;
@@ -1324,7 +1327,7 @@ int run_task_pingpong_app(int is_client, int qp_exchange_method)
 
 int run_mpi(int argc, char **argv)
 {
-#if HAVE_MPI
+#if HAVE_MPICC
     int num_ranks;
     int ret;
 
