@@ -1162,13 +1162,23 @@ int parse_command_line_args(int argc, char*argv[], struct test_params * app_para
 	return 0;
 }
 
-void dump_results(struct test_params * app_params, struct timeval		*start, struct timeval		*end)
+void dump_results(struct test_params * app_params, struct timeval *start, struct timeval *end)
 {
+	// only client results reported.
+	if (my_rank == 0) {
+		return;
+	}
+
 	float usec = (end->tv_sec - start->tv_sec) * 1000000 + (end->tv_usec - start->tv_usec);
 	long long bytes = (long long) app_params->size * app_params->iters * 2;  // this is not correct.
 
 	printf("%lld bytes in %.2f seconds = %.2f Mbit/sec\n", bytes, usec / 1000000., bytes * 8. / usec);
-	printf("%d iters in %.2f seconds = %.2f usec/iter\n",  app_params->iters, usec / 1000000., usec / app_params->iters);
+	printf("opcode: %s  datatype: %s  %d iters in %.2f seconds = %.2f usec/iter\n",
+			pp_wr_calc_op_str[app_params->calc_opcode],
+			pp_wr_data_type_str[app_params->calc_data_type].str,
+			app_params->iters,
+			usec / 1000000.0,
+			usec / app_params->iters);
 }
 
 
