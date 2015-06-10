@@ -237,7 +237,7 @@ static int __latency_test_proc_root(void* context)
 				wr1->exp_opcode					= IBV_EXP_WR_SEND_ENABLE;
 				wr1->exp_send_flags 			= 0;
 				wr1->task.wqe_enable.qp			= ctx->proc_array[peer_rank].qp;
-				wr1->task.wqe_enable.wqe_count	= 1; // num_sends_per_iteration;
+				wr1->task.wqe_enable.wqe_count	= 1;
 
 				if (iter == (num_sends_per_iteration -1)) {
 					wr1->exp_send_flags	    	|= IBV_EXP_SEND_WAIT_EN_LAST;
@@ -253,7 +253,7 @@ static int __latency_test_proc_root(void* context)
 					wr2->exp_send_flags	    	= (IBV_EXP_SEND_SIGNALED|IBV_EXP_SEND_WAIT_EN_LAST);
 				}
 				wr2->task.cqe_wait.cq			= ctx->proc_array[peer_rank].rcq;
-				wr2->task.cqe_wait.cq_count		= 1; // num_sends_per_iteration;
+				wr2->task.cqe_wait.cq_count		= 1;
 
 				idx += 2;
 		}
@@ -349,7 +349,7 @@ static int __latency_test_proc_nonroot(void* context)
 			//wr1->exp_send_flags				= 0;
 			wr1->exp_send_flags				= completion_on_each_receive ? IBV_EXP_SEND_SIGNALED : 0; // IBV_EXP_SEND_SIGNALED; // ask for completion on each receive  // 0; // aaaa
 			wr1->task.cqe_wait.cq			= ctx->proc_array[root_rank].rcq;
-			wr1->task.cqe_wait.cq_count		= 1; // num_sends_per_iteration;
+			wr1->task.cqe_wait.cq_count		= 1;
 
 			if (iter == (num_sends_per_iteration -1)) {
 				wr1->exp_send_flags	|= IBV_EXP_SEND_WAIT_EN_LAST;
@@ -361,7 +361,7 @@ static int __latency_test_proc_nonroot(void* context)
 			wr2->exp_opcode					= IBV_EXP_WR_SEND_ENABLE;
 			wr2->exp_send_flags 			= 0;
 			wr2->task.wqe_enable.qp			= ctx->proc_array[root_rank].qp;
-			wr2->task.wqe_enable.wqe_count	= 1; // num_sends_per_iteration;
+			wr2->task.wqe_enable.wqe_count	= 1;
 
 			if (iter == (num_sends_per_iteration -1)) {
 				wr2->exp_send_flags	|= (IBV_EXP_SEND_SIGNALED | IBV_EXP_SEND_WAIT_EN_LAST);
@@ -467,6 +467,7 @@ static int __latency_test_proc( void *context )
 		exit(-1);
 	}
 
+	MPI_Barrier(MPI_COMM_WORLD);
 	return rc;
 }
 
