@@ -12,6 +12,7 @@ static struct {
 } __alg_obj;
 
 
+
 static int __algorithm_recursive_doubling_proc( void *context )
 {
 	int rc = 0;
@@ -22,6 +23,8 @@ static int __algorithm_recursive_doubling_proc( void *context )
 	int ne = 0;
 	struct ibv_exp_send_wr wr;
 	struct ibv_exp_send_wr *wr_bad;
+
+	timestamp_t t0 = get_tsc();
 
 	__alg_obj.cur_iteration++;
 
@@ -159,6 +162,9 @@ static int __algorithm_recursive_doubling_proc( void *context )
 		} while (ne < __alg_obj.total_round);
 	}
 
+	if (my_id == 0) {
+		printf("Barrier took: %6.6f usec \n",  ts_to_usec(get_tsc()-t0));
+	}
 
 	return rc;
 }
@@ -205,8 +211,10 @@ static int __algorithm_recursive_doubling_setup( void *context )
 
 	/* calculate total number of procs in basic group and number of rounds
 	 */
+
 	total_round = __log2(ctx->conf.num_proc);
 	num_proc_basic_group = 1 << total_round;
+
 	if (ctx->conf.my_proc >= num_proc_basic_group)
 		total_round = 1;
 	if (ctx->conf.my_proc < (ctx->conf.num_proc - num_proc_basic_group))
@@ -244,8 +252,9 @@ static int __algorithm_recursive_doubling_close( void *context )
 	return rc;
 }
 
-static struct cc_alg_info __algorithm_recursive_doubling_info = {
+static struct cc_alg_info __barrier_algorithm_recursive_doubling_info = {
 		"Barrier: recursive doubling",
+		"barrier",
 		"This algorithm uses Managed QP, IBV_WR_CQE_WAIT, IBV_WR_SEND_ENABLE",
 		&__algorithm_recursive_doubling_setup,
 		&__algorithm_recursive_doubling_close,

@@ -49,6 +49,7 @@
 
 struct cc_alg_info {
 	const char             *name;	/* Algorithm name */
+	const char             *short_name;	/* for matching with command line '--test' */
 	const char             *note;	/* Algorithm note */
 	int (*setup)(void *);
 	int (*close)(void *);
@@ -258,7 +259,7 @@ static int __init_ctx( struct cc_context *ctx )
 
 	/*
 	 * VPI only works with registered memory. Any memory buffer which is valid in
-	 * the process’s virtual space can be registered. During the registration process
+	 * the process's virtual space can be registered. During the registration process
 	 * the user sets memory permissions and receives a local and remote key
 	 * (lkey/rkey) which will later be used to refer to this memory buffer
 	 */
@@ -276,7 +277,8 @@ static int __init_ctx( struct cc_context *ctx )
 	 * =======================================
 	 */
 	log_trace("create manage QP ...\n");
-	ctx->mcq = ibv_create_cq(ctx->ib_ctx, 0x10, NULL, NULL, 0);
+	// Note: mcq was previously created with 0x10 entries. It must be larger
+	ctx->mcq = ibv_create_cq(ctx->ib_ctx, 0x1000, NULL, NULL, 0);
 	if (!ctx->mcq)
 		log_fatal("ibv_create_cq failed\n");
 
@@ -290,13 +292,13 @@ static int __init_ctx( struct cc_context *ctx )
 		init_attr.send_cq = ctx->mcq;
 		init_attr.recv_cq = ctx->mcq;
 		init_attr.srq = NULL;
-		init_attr.cap.max_send_wr  = 0x40;
+		init_attr.cap.max_send_wr  = 0x0400; // Default 0x40 was insufficient
 		init_attr.cap.max_recv_wr  = 0;
 		init_attr.cap.max_send_sge = 16;
 		init_attr.cap.max_recv_sge = 16;
 		init_attr.cap.max_inline_data = 0;
 		init_attr.qp_type = IBV_QPT_RC;
-		init_attr.sq_sig_all = 0;
+		init_attr.sq_sig_all = 0;  // so that we can poll for a single completion for the entire list of WQEs posted to the regular QP,
 		init_attr.pd = ctx->pd;
 
 		{
@@ -377,11 +379,11 @@ static int __init_ctx( struct cc_context *ctx )
 	 * =======================================
 	 */
 	log_trace("create SCQ ...\n");
-	ctx->proc_array[ctx->conf.my_proc].scq = ibv_create_cq(
-			ctx->ib_ctx, ctx->conf.cq_rx_depth, NULL, NULL, 0);
+	ctx->proc_array[ctx->conf.my_proc].scq = ibv_create_cq(ctx->ib_ctx, ctx->conf.cq_tx_depth, NULL, NULL, 0);
 	if (!ctx->proc_array[ctx->conf.my_proc].scq)
 		log_fatal("ibv_create_cq failed\n");
 
+	log_trace("create SCQ = %p\n", ctx->proc_array[ctx->conf.my_proc].scq);
 	/*
 	 * 4. Setup connections with Peers
 	 * =======================================
@@ -402,10 +404,13 @@ static int __init_ctx( struct cc_context *ctx )
 
 
 			ctx->proc_array[i].scq = ctx->proc_array[ctx->conf.my_proc].scq;
-			ctx->proc_array[i].rcq = ibv_create_cq(
-					ctx->ib_ctx, ctx->conf.cq_rx_depth, NULL, NULL, 0);
-			if (!ctx->proc_array[i].rcq)
+			ctx->proc_array[i].rcq = ibv_create_cq(ctx->ib_ctx, ctx->conf.cq_rx_depth, NULL, NULL, 0);
+			if (!ctx->proc_array[i].rcq) {
 				log_fatal("ibv_create_cq failed\n");
+			}
+
+			log_trace("create QPs for peers ...scq=%p  rcq=%p\n", ctx->proc_array[i].scq, ctx->proc_array[i].rcq);
+
 
 			attr.comp_mask            = IBV_EXP_CQ_ATTR_CQ_CAP_FLAGS;
 			attr.moderation.cq_count  = 0;
@@ -413,8 +418,9 @@ static int __init_ctx( struct cc_context *ctx )
 			attr.cq_cap_flags         = IBV_EXP_CQ_IGNORE_OVERRUN;
 
 			rc = ibv_exp_modify_cq(ctx->proc_array[i].rcq, &attr, IBV_EXP_CQ_CAP_FLAGS);
-			if (rc)
+			if (rc) {
 				log_fatal("ibv_modify_cq failed\n");
+			}
 
 			memset(&init_attr, 0, sizeof(init_attr));
 
@@ -438,6 +444,7 @@ static int __init_ctx( struct cc_context *ctx )
 			}
 			if (!ctx->proc_array[i].qp)
 				log_fatal("ibv_create_qp_ex failed\n");
+
 		}
 	}
 		for (i = 0; i < ctx->conf.num_proc; i++) {
@@ -559,6 +566,8 @@ static int __init_ctx( struct cc_context *ctx )
 /*
  * This is a place to include new algorithms
  */
+
+#include "cc_latency_test.h"
 #include "cc_barrier.h"
 
 static void __usage(const char *argv)
@@ -570,6 +579,8 @@ static void __usage(const char *argv)
 		fprintf(stderr, "\n%s\n", MODULE_COPYRIGHT);
 		fprintf(stderr, "\n");
 		fprintf(stderr, "Options:\n");
+		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-t", "--test", "test to run (provide unique subset of the test name, see --list option)");
+		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-l", "--list", "list available tests");
 		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-n", "--np", "number of processes");
 		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-r", "--rank", "current process rank");
 		fprintf(stderr, "  %-2s,  %-15s  \t%s\n", "-i", "--iters",  "count of launchers (default: 100)");
@@ -583,6 +594,33 @@ static void __usage(const char *argv)
 	exit(errno);
 }
 
+static void show_test_algorithms()
+{
+	printf("Available test algorithms\n");
+	printf("-------------------------------------------------------\n");
+	printf("%12s : %s \n", __barrier_algorithm_recursive_doubling_info.short_name, __barrier_algorithm_recursive_doubling_info.name);
+	printf("%12s : %s \n", __latency_test_info.short_name,                         __latency_test_info.name);
+	printf("\n");
+}
+
+static struct cc_alg_info     * get_test_algorithm(char *name)
+{
+	// For now we look for a substring of the 'short_name' for each test.
+	// TBD: add 'registration' mechanism to register a test so that this code can simply iteratee over available tests...
+
+	if (strstr(__barrier_algorithm_recursive_doubling_info.short_name, name) != NULL) {
+		printf("Chose barrier based on recursive doubling \n");
+		return &__barrier_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
+	}
+
+	if (strstr(__latency_test_info.short_name, name) != NULL) {
+		printf("Chose latency test\n");
+		return &__latency_test_info;
+	}
+
+	return NULL;
+}
+
 static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv[] )
 {
 	int rc = 0;
@@ -592,11 +630,12 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 	ctx->conf.check = 0;
 	ctx->conf.warmup = 10;
 	ctx->conf.size = 1;
-	ctx->conf.cq_tx_depth = 0x10;
-	ctx->conf.cq_rx_depth = 0x10;
-	ctx->conf.qp_tx_depth = 0x10;
-	ctx->conf.qp_rx_depth = 0x10;
-	ctx->conf.algorithm = &__algorithm_recursive_doubling_info;
+	ctx->conf.cq_tx_depth = 0x0200;
+	ctx->conf.cq_rx_depth = 0x0200;
+	ctx->conf.qp_tx_depth = 0x0200;
+	ctx->conf.qp_rx_depth = 0x0200;
+	ctx->conf.algorithm = &__barrier_algorithm_recursive_doubling_info;
+
 
 #if defined(USE_MPI)
 	MPI_Comm_rank(MPI_COMM_WORLD, &ctx->conf.my_proc);
@@ -612,6 +651,8 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 
 		static struct option long_options[] = {
 			{ .name = "help",	.has_arg = 0, .val = '?' },
+			{ .name = "test",	.has_arg = 1, .val = 't' },
+			{ .name = "list",	.has_arg = 0, .val = 'l' },
 			{ .name = "np",		.has_arg = 1, .val = 'n' },
 			{ .name = "rank",	.has_arg = 1, .val = 'r' },
 			{ .name = "iters",	.has_arg = 1, .val = 'i' },
@@ -622,14 +663,22 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 			{ 0 }
 		};
 
-		c = getopt_long(argc, argv, "?n:r:i:s:d",
-				long_options, NULL);
+		c = getopt_long(argc, argv, "?t:ln:r:i:s:d", long_options, NULL);  // added a:l
 		if (c == -1)
 			break;
 
 		switch (c) {
 		case '?':
 			__usage(argv[0]);
+			break;
+
+		case 't':
+			ctx->conf.algorithm = get_test_algorithm(optarg);
+			break;
+
+		case 'l':
+			show_test_algorithms();
+			return -1;
 			break;
 
 		case 'n':
@@ -818,6 +867,7 @@ int main(int argc, char *argv[])
 		ibv_free_device_list(dev_list);
 
 #if defined(USE_MPI)
+	MPI_Barrier(MPI_COMM_WORLD);
 	MPI_Finalize();
 #endif
 
