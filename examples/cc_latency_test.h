@@ -307,7 +307,6 @@ static int __latency_test_proc_nonroot(void* context)
 	int rc = 0;
 	int root_rank = 0;
 
-	//struct ibv_exp_send_wr * wr_peer_qp;
 	struct ibv_exp_send_wr * wr_mqp;
 
 	int idx = 0;
@@ -362,14 +361,13 @@ static int __latency_test_proc_nonroot(void* context)
 			wr2->wr_id						= 4000 + iter;
 			wr2->next						= wr3;
 			wr2->exp_opcode					= IBV_EXP_WR_SEND_ENABLE;
-			wr2->exp_send_flags 			= 0; //IBV_EXP_SEND_WAIT_EN_LAST;  // so next 'wait' is on one completion
+			wr2->exp_send_flags 			= 0;
 			wr2->task.wqe_enable.qp			= ctx->proc_array[root_rank].qp;
 			wr2->task.wqe_enable.wqe_count	= 1;
 
 
 			if (iter == last_iter) {
 				wr2->exp_send_flags	|= (IBV_EXP_SEND_SIGNALED | IBV_EXP_SEND_WAIT_EN_LAST);
-				//wr2->exp_send_flags	|= (IBV_EXP_SEND_SIGNALED);
 			}
 
 			idx += 2;
@@ -382,10 +380,6 @@ static int __latency_test_proc_nonroot(void* context)
 	struct ibv_exp_task *task_bad;
 
 	memset(task, 0, sizeof(*task) * 2);
-
-	//printf("my_id: %d %s cur_iteration=%d   start\n", SIG, __lat_test_alg_obj.cur_iteration);
-
-
 
 	// ------------------------------------------------------------------------------------------------
 	// Send to root
