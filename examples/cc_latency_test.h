@@ -210,6 +210,8 @@ static int __latency_test_proc_root(void* context)
 		struct ibv_exp_send_wr * wr_send_to_qp = &__lat_test_alg_obj.wr[idx];
 
 		// get a series of 'Send' entries.
+		int last_iter = num_sends_per_iteration - 1;
+
 		for (iter = 0 ; iter < num_sends_per_iteration; iter++) {
 				wr1 					= &__lat_test_alg_obj.wr[idx];
 				wr2 					= &__lat_test_alg_obj.wr[idx+1];
@@ -235,11 +237,11 @@ static int __latency_test_proc_root(void* context)
 				wr1->wr_id						= 3000 + iter;
 				wr1->next						= wr2;
 				wr1->exp_opcode					= IBV_EXP_WR_SEND_ENABLE;
-				wr1->exp_send_flags 			= 0;
+				wr1->exp_send_flags	    	    = 0;
 				wr1->task.wqe_enable.qp			= ctx->proc_array[peer_rank].qp;
 				wr1->task.wqe_enable.wqe_count	= 1;
 
-				if (iter == (num_sends_per_iteration -1)) {
+				if (iter == last_iter) {
 					wr1->exp_send_flags	    	|= IBV_EXP_SEND_WAIT_EN_LAST;
 				}
 
@@ -248,7 +250,7 @@ static int __latency_test_proc_root(void* context)
 				wr2->next						= wr3;
 				wr2->exp_opcode					= IBV_EXP_WR_CQE_WAIT;
 				wr2->exp_send_flags				= completion_on_each_receive ? IBV_EXP_SEND_SIGNALED : 0; // IBV_EXP_SEND_SIGNALED; // ask for completion on each receive  // 0; // aaaa
-				if (iter == (num_sends_per_iteration -1)) {
+				if (iter == last_iter) {
 					// last WAIT should trigger the completion
 					wr2->exp_send_flags	    	= (IBV_EXP_SEND_SIGNALED|IBV_EXP_SEND_WAIT_EN_LAST);
 				}
@@ -336,6 +338,7 @@ static int __latency_test_proc_nonroot(void* context)
 	// Wait on the rqp, enable the 'peer qp'
 	wr_mqp = &__lat_test_alg_obj.wr[idx];
 
+	int last_iter = num_sends_per_iteration - 1;
 	for (iter = 0 ; iter < num_sends_per_iteration; iter++) {
 
 			wr1 					= &__lat_test_alg_obj.wr[idx];
@@ -351,20 +354,22 @@ static int __latency_test_proc_nonroot(void* context)
 			wr1->task.cqe_wait.cq			= ctx->proc_array[root_rank].rcq;
 			wr1->task.cqe_wait.cq_count		= 1;
 
-			if (iter == (num_sends_per_iteration -1)) {
-				wr1->exp_send_flags	|= IBV_EXP_SEND_WAIT_EN_LAST;
+			if (iter == last_iter) {
+					wr1->exp_send_flags	|= IBV_EXP_SEND_WAIT_EN_LAST;
 			}
 
 			// enable the 'Send' posted to 'ctx->proc_array[root_rank].qp' by posting a 'SEND_ENABLE' to the mqp.
 			wr2->wr_id						= 4000 + iter;
 			wr2->next						= wr3;
 			wr2->exp_opcode					= IBV_EXP_WR_SEND_ENABLE;
-			wr2->exp_send_flags 			= 0;
+			wr2->exp_send_flags 			= 0; //IBV_EXP_SEND_WAIT_EN_LAST;  // so next 'wait' is on one completion
 			wr2->task.wqe_enable.qp			= ctx->proc_array[root_rank].qp;
 			wr2->task.wqe_enable.wqe_count	= 1;
 
-			if (iter == (num_sends_per_iteration -1)) {
+
+			if (iter == last_iter) {
 				wr2->exp_send_flags	|= (IBV_EXP_SEND_SIGNALED | IBV_EXP_SEND_WAIT_EN_LAST);
+				//wr2->exp_send_flags	|= (IBV_EXP_SEND_SIGNALED);
 			}
 
 			idx += 2;
@@ -452,14 +457,16 @@ static int __latency_test_proc( void *context )
 		rc = __latency_test_proc_root(context);
 		double t = ts_to_usec((get_tsc() - t0));
 		update_histogram(t);
-		printf("my_id: 0   iteration took: %6.6f  usec  iter=%d\n", t, __lat_test_alg_obj.cur_iteration);
+		//if (__lat_test_alg_obj.cur_iteration % 100000 == 0) {
+			printf("my_id: 0   iteration took: %6.6f  usec  iter=%d\n", t, __lat_test_alg_obj.cur_iteration);
+		//}
 	}
 	else {
 		rc = __latency_test_proc_nonroot(context);
 	}
 
 
-	int to_post = ctx->conf.qp_rx_depth;
+	int to_post = num_sends_per_iteration;
 	int peer = (ctx->conf.my_proc + 1) % 2;
 
 	if (__post_read(ctx, ctx->proc_array[peer].qp, to_post) != to_post) {
