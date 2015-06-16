@@ -4,7 +4,8 @@
 
 #include <infiniband/mlx5_hw.h>
 
-int num_sends_per_iteration = 100;   // number of sends (TBD: make this a param)
+int num_sends_per_iteration = 50;   // number of sends (TBD: make this a param)
+
 
 
 static struct {
@@ -19,8 +20,7 @@ static struct {
 } __lat_test_alg_obj;
 
 
-// The following copied from mxm and slghtly shortened
-double get_cpu_freq()
+static double get_cpu_freq()
 {
     double mhz = 0.0;
     double m;
@@ -56,8 +56,6 @@ double get_cpu_freq()
     return mhz * 1e6;
 }
 
-
-
 typedef  unsigned long long timestamp_t;
 
 static inline timestamp_t get_tsc()
@@ -73,7 +71,7 @@ static inline double ts_to_usec(timestamp_t t)
 	if (freq == 0.0) {
 		freq = get_cpu_freq();
 	}
-	return 1000.0 * 1000.0 *  t/freq;
+	return 1000.0 * 1000.0 *  t / freq;
 }
 
 
@@ -144,23 +142,36 @@ char *opcode_to_str(int op)
 			return "IBV_EXP_WR_CQE_WAIT";
 		case IBV_EXP_WR_SEND_ENABLE:
 			return "IBV_EXP_WR_SEND_ENABLE";
-
 		case IBV_EXP_WR_RDMA_WRITE:
+			return "IBV_EXP_WR_RDMA_WRITE";
 		case IBV_EXP_WR_RDMA_WRITE_WITH_IMM:
+			return "IBV_EXP_WR_RDMA_WRITE_WITH_IMM";
 		case IBV_EXP_WR_SEND_WITH_IMM:
+			return "IBV_EXP_WR_SEND_WITH_IMM";
 		case IBV_EXP_WR_RDMA_READ:
+			return "IBV_EXP_WR_RDMA_READ";
 		case IBV_EXP_WR_ATOMIC_CMP_AND_SWP:
+			return "IBV_EXP_WR_ATOMIC_CMP_AND_SWP";
 		case IBV_EXP_WR_ATOMIC_FETCH_AND_ADD:
+			return "IBV_EXP_WR_ATOMIC_FETCH_AND_ADD";
 		case IBV_EXP_WR_SEND_WITH_INV:
+			return "IBV_EXP_WR_SEND_WITH_INV";
 		case IBV_EXP_WR_LOCAL_INV:
-		case IBV_EXP_WR_BIND_MW	:
-
+			return "IBV_EXP_WR_LOCAL_INV";
+		case IBV_EXP_WR_BIND_MW:
+			return "IBV_EXP_WR_BIND_MW";
 		case IBV_EXP_WR_RECV_ENABLE:
+			return "IBV_EXP_WR_RECV_ENABLE";
 		case IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP:
+			return "IBV_EXP_WR_EXT_MASKED_ATOMIC_CMP_AND_SWP";
 		case IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD:
+			return "IBV_EXP_WR_EXT_MASKED_ATOMIC_FETCH_AND_ADD";
 		case IBV_EXP_WR_NOP:
+			return "IBV_EXP_WR_NOP";
 		case IBV_EXP_WR_UMR_FILL:
+			return "IBV_EXP_WR_UMR_FILL";
 		case IBV_EXP_WR_UMR_INVALIDATE:
+			return "IBV_EXP_WR_UMR_INVALIDATE";
 		default:
 			printf("%s Got unknown value: %d\n", __FUNCTION__, op);
 			return "Other" ;
@@ -192,7 +203,6 @@ void dump_task_info(struct ibv_exp_task *ptask)
 
 static int __latency_test_proc_root(void* context)
 {
-		int completion_on_each_receive = 0;
 		struct cc_context *ctx = context;
 		int my_id = ctx->conf.my_proc;
 		int rc = 0;
@@ -211,7 +221,6 @@ static int __latency_test_proc_root(void* context)
 
 		// get a series of 'Send' entries.
 		int last_iter = num_sends_per_iteration - 1;
-
 		for (iter = 0 ; iter < num_sends_per_iteration; iter++) {
 				wr1 					= &__lat_test_alg_obj.wr[idx];
 				wr2 					= &__lat_test_alg_obj.wr[idx+1];
@@ -239,7 +248,7 @@ static int __latency_test_proc_root(void* context)
 				wr1->exp_opcode					= IBV_EXP_WR_SEND_ENABLE;
 				wr1->exp_send_flags	    	    = 0;
 				wr1->task.wqe_enable.qp			= ctx->proc_array[peer_rank].qp;
-				wr1->task.wqe_enable.wqe_count	= 1;
+				wr1->task.wqe_enable.wqe_count	= (iter + 1);
 
 				if (iter == last_iter) {
 					wr1->exp_send_flags	    	|= IBV_EXP_SEND_WAIT_EN_LAST;
@@ -249,13 +258,13 @@ static int __latency_test_proc_root(void* context)
 				wr2->wr_id						= 5000 + iter;
 				wr2->next						= wr3;
 				wr2->exp_opcode					= IBV_EXP_WR_CQE_WAIT;
-				wr2->exp_send_flags				= completion_on_each_receive ? IBV_EXP_SEND_SIGNALED : 0; // IBV_EXP_SEND_SIGNALED; // ask for completion on each receive  // 0; // aaaa
+				wr2->exp_send_flags				= 0;
 				if (iter == last_iter) {
 					// last WAIT should trigger the completion
-					wr2->exp_send_flags	    	= (IBV_EXP_SEND_SIGNALED|IBV_EXP_SEND_WAIT_EN_LAST);
+					wr2->exp_send_flags	    	= (IBV_EXP_SEND_SIGNALED | IBV_EXP_SEND_WAIT_EN_LAST);
 				}
 				wr2->task.cqe_wait.cq			= ctx->proc_array[peer_rank].rcq;
-				wr2->task.cqe_wait.cq_count		= 1;
+				wr2->task.cqe_wait.cq_count		= (iter + 1);
 
 				idx += 2;
 		}
@@ -292,7 +301,7 @@ static int __latency_test_proc_root(void* context)
 		//printf("root waiting for send completions mqpn=0x%x wait enable from cqn 0x%x\n", ctx->mqp->qp_num,
 		//		to_mcq(ctx->proc_array[peer_rank].rcq)->cqn);
 
-		int expected_completions = completion_on_each_receive ? num_sends_per_iteration : 1; //  // 1; // num_iterations;  // was 1 // aaaa
+		int expected_completions = 1;
 		rc = wait_for_completions(ctx->mcq, __lat_test_alg_obj.wc, expected_completions, my_id, "mcq");
 
 		return rc;
@@ -301,7 +310,6 @@ static int __latency_test_proc_root(void* context)
 
 static int __latency_test_proc_nonroot(void* context)
 {
-	int completion_on_each_receive = 0;
 	struct cc_context *ctx = context;
 	int my_id = ctx->conf.my_proc;
 	int rc = 0;
@@ -349,9 +357,9 @@ static int __latency_test_proc_nonroot(void* context)
 			wr1->next						= wr2;
 			wr1->exp_opcode					= IBV_EXP_WR_CQE_WAIT;
 			//wr1->exp_send_flags				= 0;
-			wr1->exp_send_flags				= completion_on_each_receive ? IBV_EXP_SEND_SIGNALED : 0; // IBV_EXP_SEND_SIGNALED; // ask for completion on each receive  // 0; // aaaa
+			wr1->exp_send_flags				= 0;
 			wr1->task.cqe_wait.cq			= ctx->proc_array[root_rank].rcq;
-			wr1->task.cqe_wait.cq_count		= 1;
+			wr1->task.cqe_wait.cq_count		= (iter + 1);
 
 			if (iter == last_iter) {
 					wr1->exp_send_flags	|= IBV_EXP_SEND_WAIT_EN_LAST;
@@ -363,7 +371,7 @@ static int __latency_test_proc_nonroot(void* context)
 			wr2->exp_opcode					= IBV_EXP_WR_SEND_ENABLE;
 			wr2->exp_send_flags 			= 0;
 			wr2->task.wqe_enable.qp			= ctx->proc_array[root_rank].qp;
-			wr2->task.wqe_enable.wqe_count	= 1;
+			wr2->task.wqe_enable.wqe_count	= (iter + 1);
 
 
 			if (iter == last_iter) {
@@ -406,12 +414,8 @@ static int __latency_test_proc_nonroot(void* context)
 		exit(-1);
 	}
 
-	int expected_completions = completion_on_each_receive ? num_sends_per_iteration: 1;
+	int expected_completions = 1;
 	rc = wait_for_completions(ctx->mcq, __lat_test_alg_obj.wc, expected_completions, my_id, "mcq");
-
-	//rc = wait_for_completions(ctx->proc_array[root_rank].scq, __lat_test_alg_obj.wc, num_iterations, my_id, "scq");
-
-	//printf("my_id: %d %s cur_iteration=%d   end\n---------------------------------------\n", SIG, __lat_test_alg_obj.cur_iteration);
 
 	return rc;
 }
@@ -421,16 +425,15 @@ static void update_histogram(double t)
 {
 	static int max_idx = (sizeof( __lat_test_alg_obj.histogram) / sizeof(__lat_test_alg_obj.histogram[0])) - 1;
 	// update histogram
-		int idx = (int) t;
-		if (idx > max_idx) {
-			idx = max_idx;
-		}
-		__lat_test_alg_obj.histogram[idx]++;
-		//printf("idx=%d val=%d\n", idx, __lat_test_alg_obj.histogram[idx]);
+	int idx = (int) t;
+	if (idx > max_idx) {
+		idx = max_idx;
+	}
+	__lat_test_alg_obj.histogram[idx]++;
 
-		// for average
-		__lat_test_alg_obj.tot_time+= t;
-		__lat_test_alg_obj.num_iter++;
+	// for average
+	__lat_test_alg_obj.tot_time+= t;
+	__lat_test_alg_obj.num_iter++;
 
 }
 
@@ -451,9 +454,9 @@ static int __latency_test_proc( void *context )
 		rc = __latency_test_proc_root(context);
 		double t = ts_to_usec((get_tsc() - t0));
 		update_histogram(t);
-		//if (__lat_test_alg_obj.cur_iteration % 100000 == 0) {
-			printf("my_id: 0   iteration took: %6.6f  usec  iter=%d\n", t, __lat_test_alg_obj.cur_iteration);
-		//}
+		if (__lat_test_alg_obj.cur_iteration % 10000 == 0) {
+			printf("my_id: 0   iteration took: %6.6f  usec  iter=%d    (round_trips_per_iteration=%d) \n", t, __lat_test_alg_obj.cur_iteration, num_sends_per_iteration);
+		}
 	}
 	else {
 		rc = __latency_test_proc_nonroot(context);
