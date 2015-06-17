@@ -16,6 +16,7 @@
 #endif //CORE_DIRECT_DEBUG
 
 
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -1267,9 +1268,13 @@ static int pp_post_send(struct pingpong_context *ctx, struct pingpong_dest *rem_
 int pp_post_ext_wqe(struct pingpong_context *ctx, enum ibv_exp_wr_opcode op) {		//not in use
 	int ret;
 	struct ibv_exp_send_wr *bad_wr;
-	struct ibv_exp_send_wr wr = { .wr_id = PP_CQE_WAIT, //todo - check
-			.sg_list = NULL, .num_sge = 0, .exp_opcode = op, .exp_send_flags =
-					IBV_EXP_SEND_SIGNALED, };
+	struct ibv_exp_send_wr wr = {
+			.wr_id = PP_CQE_WAIT, //todo - check
+			.sg_list = NULL,
+			.num_sge = 0,
+			.exp_opcode = op,
+			.exp_send_flags = IBV_EXP_SEND_SIGNALED,
+	};
 
 	switch (op) {
 	case IBV_EXP_WR_RECV_ENABLE:
