@@ -17,3 +17,35 @@ done
 ## How to run CD tests w/ valgrind
 
 valgrind --tool=memcheck --leak-check=full --track-origins=yes tests/ibv_cc_test
+
+
+
+## Running the tests
+
+The 'recursive doubling barrier' and the 'ping pong latency test' can be run launched via 'mpirun' as follows:
+
+    mpirun -np $np   ./examples/ibv_cc_barrier --debug=0 --size=8 --np=$np --iters=1000 --warmup=0 --test=barrier
+    mpirun -np $np   ./examples/ibv_cc_barrier --debug=0 --size=8 --np=$np --iters=1000 --warmup=0 --test=latency
+
+
+Running the 'cc2_pingpong test' 
+-----------------------------------
+
+# this test assumes 4 clients connect to the server.  
+
+export EXE_RDMA=/full/path/to/cc2_rdma_pingpong
+export EXE_SEND=/full/path/to/cc2_send_pingpong
+SERVER=server_name_here  
+HCA=mlx5_0
+
+RDMA-based
+Server:  taskset -c 0 $EXE_RDMA -d mlx4_0 -s 8 -n 2000
+Client:  for i in 0 2 4 6 ; do eval "taskset -c $i $EXE_RDMA  -d $HCA -s 8 -n 2000 $SERVER &" ;done
+
+SEND-based
+
+Server:  taskset -c 0 $EXE_SEND -d mlx4_0 -s 8 -n 2000
+Client:  for i in 0 2 4 6 ; do eval "taskset -c $i $EXE_SEND  -d $HCA  -s 8 -n 2000 $SERVER  &" ;done
+
+
+
