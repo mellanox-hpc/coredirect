@@ -747,6 +747,7 @@ int main(int argc, char *argv[])
 	/* Parse user provided command line parameters */
 	rc = __parse_cmd_line(ctx, argc, argv);
 
+        ib_devname = getenv("CD_IBDEV");
 	log_trace("my_proc: %d\n", ctx->conf.my_proc);
 	log_trace("num_proc: %d\n", ctx->conf.num_proc);
 
