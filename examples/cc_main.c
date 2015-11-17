@@ -834,7 +834,8 @@ int main(int argc, char *argv[])
 				rc = ctx->conf.algorithm->proc(ctx);
 			}
 		}
-
+                MPI_Barrier(MPI_COMM_WORLD);
+                log_info("Starting main test\n");
 		if (!rc && ctx->conf.iters) {
 			struct cc_timer start_time;
 			struct cc_timer end_time;
@@ -847,16 +848,23 @@ int main(int argc, char *argv[])
 			}
 			__timer(&end_time);
 
+                        double wt = (end_time.wall - start_time.wall) / (double)ctx->conf.iters;
+                        double wt_av = 0;
+                        double cpus = (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters;
+                        double cpus_av = 0;
+                        fprintf(stderr,"rank %d done\n",ctx->conf.my_proc);
+                        MPI_Allreduce(&wt,&wt_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
+                        MPI_Allreduce(&cpus,&cpus_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
+                        wt_av = wt_av / ctx->conf.num_proc;
+                        cpus_av = cpus_av / ctx->conf.num_proc;
 			sleep(3);
 			if (ctx->conf.my_proc == 0) {
 				log_info("Title                : %s\n", ctx->conf.algorithm->name);
 				log_info("Description          : %s\n", ctx->conf.algorithm->note);
 				log_info("Number of processes  : %d\n", ctx->conf.num_proc);
 				log_info("Iterations           : %d\n", ctx->conf.iters);
-				log_info("Time wall total      : %0.4f seconds\n", (end_time.wall - start_time.wall) / 1000000.0);
-				log_info("Time cpus total      : %0.4f seconds\n", (end_time.cpus - start_time.cpus) / 1000000.0);
-				log_info("Time wall (usec/op)  : %0.4f usec\n", (end_time.wall - start_time.wall) / (double)ctx->conf.iters);
-				log_info("Time cpus (usec/op)  : %0.4f usec\n", (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters);
+                                log_info("Time wall (usec/op)  : %0.4f usec\n", wt_av);
+                                log_info("Time cpus (usec/op)  : %0.4f usec\n", cpus_av);
 			}
 		}
 
