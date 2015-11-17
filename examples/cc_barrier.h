@@ -15,7 +15,7 @@ static struct {
 
 static int __algorithm_recursive_doubling_proc( void *context )
 {
-	int rc = 0;
+        int rc = 0;
 	struct cc_context *ctx = context;
 	int cur_round = 0;
 	int my_id = ctx->conf.my_proc;
@@ -24,9 +24,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
 	struct ibv_exp_send_wr wr;
 	struct ibv_exp_send_wr *wr_bad;
 
-	timestamp_t t0 = get_tsc();
-
-	__alg_obj.cur_iteration++;
+        __alg_obj.cur_iteration++;
 
 	memset(__alg_obj.wr, 0, 3 * __alg_obj.total_round * sizeof(*__alg_obj.wr));
 	memset(__alg_obj.wc, 0, __alg_obj.total_round * sizeof(*__alg_obj.wc));
@@ -50,9 +48,11 @@ static int __algorithm_recursive_doubling_proc( void *context )
 			log_fatal("can not post to MQP : WR{wr_id=%ld, opcode=%d, send_flags=%ld}\n",
 					wr_bad->wr_id, wr_bad->exp_opcode, wr_bad->exp_send_flags);
 
-		if (__alg_obj.cur_iteration >= (ctx->conf.qp_rx_depth - 10))
-			if (__post_read(ctx, ctx->proc_array[peer_id].qp, ctx->conf.qp_rx_depth) != ctx->conf.qp_rx_depth)
-				log_fatal("__post_read failed\n");
+                ctx->proc_array[peer_id].credits--;
+                if (ctx->proc_array[peer_id].credits <= 10) {
+                    if (__repost(ctx, ctx->proc_array[peer_id].qp, ctx->conf.qp_rx_depth, peer_id) != ctx->conf.qp_rx_depth)
+                        log_fatal("__post_read failed\n");
+                }
 	}
 
 	/* Pairwise exchange inside basic group (and single single step for nodes from extra group) */
@@ -101,9 +101,11 @@ static int __algorithm_recursive_doubling_proc( void *context )
 			log_fatal("can not post to MQP : WR{wr_id=%lu, opcode=%d, send_flags=%ld}\n",
 					wr_bad->wr_id, wr_bad->exp_opcode, wr_bad->exp_send_flags);
 
-		if (__alg_obj.cur_iteration >= (ctx->conf.qp_rx_depth - 10))
-			if (__post_read(ctx, ctx->proc_array[peer_id].qp, ctx->conf.qp_rx_depth) != ctx->conf.qp_rx_depth)
-				log_fatal("__post_read failed\n");
+                ctx->proc_array[peer_id].credits--;
+                if (ctx->proc_array[peer_id].credits <= 10) {
+                    if (__repost(ctx, ctx->proc_array[peer_id].qp, ctx->conf.qp_rx_depth, peer_id) != ctx->conf.qp_rx_depth)
+                        log_fatal("__post_read failed\n");
+                }
 	}
 
 	/* Notify a peer from extra group */
@@ -161,12 +163,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
 				log_fatal("timeout exceeded\n");
 		} while (ne < __alg_obj.total_round);
 	}
-
-	if (my_id == 0) {
-		printf("Barrier took: %6.6f usec \n",  ts_to_usec(get_tsc()-t0));
-	}
-
-	return rc;
+        return rc;
 }
 
 static int __algorithm_recursive_doubling_check( void *context )

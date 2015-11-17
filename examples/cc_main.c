@@ -86,7 +86,8 @@ struct cc_proc {
 	struct ibv_qp          *qp;
 	struct ibv_cq          *scq;
 	struct ibv_cq          *rcq;
-	struct cc_proc_info     info;
+        struct cc_proc_info     info;
+    int credits;
 };
 
 struct cc_context {
@@ -217,8 +218,13 @@ static int __post_read(struct cc_context *ctx, struct ibv_qp *qp, int count)
 		if ((rc = ibv_post_recv(qp, &wr, &bad_wr)) != 0) {
 			break;
 		}
+        return i;
+}
 
-	return i;
+static int __repost(struct cc_context *ctx, struct ibv_qp *qp, int count, int peer) {
+    int posted = __post_read(ctx,qp,count);
+    ctx->proc_array[peer].credits += posted;
+    return posted;
 }
 
 #if defined(USE_MPI)
@@ -497,7 +503,7 @@ static int __init_ctx( struct cc_context *ctx )
 		{
 			struct ibv_qp_attr attr;
 
-			if (__post_read(ctx, ctx->proc_array[i].qp, ctx->conf.qp_rx_depth) != ctx->conf.qp_rx_depth)
+                        if (__repost(ctx, ctx->proc_array[i].qp, ctx->conf.qp_rx_depth,i) != ctx->conf.qp_rx_depth)
 				log_fatal("__post_read failed\n");
 
 			memset(&attr, 0, sizeof(attr));
