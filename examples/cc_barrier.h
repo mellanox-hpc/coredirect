@@ -218,7 +218,7 @@ static int __algorithm_recursive_doubling_check2( void *context )
 
     for (i=0; i<num_proc; i++) {
         if (my_proc == i) {
-            fprintf(stderr,"barrier, rank %d\n",my_proc);
+            fprintf(stderr,"barrier check, rank %d\n",my_proc);
             usleep(1000);
             MPI_Send(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
         }

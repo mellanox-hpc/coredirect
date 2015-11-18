@@ -615,12 +615,12 @@ static struct cc_alg_info     * get_test_algorithm(char *name)
 	// TBD: add 'registration' mechanism to register a test so that this code can simply iteratee over available tests...
 
 	if (strstr(__barrier_algorithm_recursive_doubling_info.short_name, name) != NULL) {
-		printf("Chose barrier based on recursive doubling \n");
+                log_info("Chose barrier based on recursive doubling \n");
 		return &__barrier_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
 	}
 
 	if (strstr(__latency_test_info.short_name, name) != NULL) {
-		printf("Chose latency test\n");
+                log_info("Chose latency test\n");
 		return &__latency_test_info;
 	}
 
@@ -823,8 +823,12 @@ int main(int argc, char *argv[])
 		}
 
 		if (!rc && ctx->conf.check && ctx->conf.algorithm->check) {
-			rc = ctx->conf.algorithm->check(ctx);
-                        log_fatal("check accuracy (self-test) result is %s\n", (rc ? "FAIL" : "OK"));
+                        rc = ctx->conf.algorithm->check(ctx);
+                        if (0 == rc) {
+                            log_info("check accuracy (self-test) result is %s\n", "OK");
+                        } else {
+                            log_fatal("check accuracy (self-test) result is %s\n", "FAIL");
+                        }
 		}
 
 		if (!rc && ctx->conf.warmup) {
@@ -836,8 +840,7 @@ int main(int argc, char *argv[])
 			}
 		}
                 MPI_Barrier(MPI_COMM_WORLD);
-                log_info("Starting main test\n");
-		if (!rc && ctx->conf.iters) {
+                if (!rc && ctx->conf.iters) {
 			struct cc_timer start_time;
 			struct cc_timer end_time;
 			int iters = ctx->conf.iters;
@@ -853,7 +856,6 @@ int main(int argc, char *argv[])
                         double wt_av = 0;
                         double cpus = (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters;
                         double cpus_av = 0;
-                        fprintf(stderr,"rank %d done\n",ctx->conf.my_proc);
                         MPI_Allreduce(&wt,&wt_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
                         MPI_Allreduce(&cpus,&cpus_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
                         wt_av = wt_av / ctx->conf.num_proc;
