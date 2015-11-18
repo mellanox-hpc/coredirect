@@ -824,7 +824,7 @@ int main(int argc, char *argv[])
 
 		if (!rc && ctx->conf.check && ctx->conf.algorithm->check) {
 			rc = ctx->conf.algorithm->check(ctx);
-			log_trace("check accuracy (self-test) result is %s\n", (rc ? "FAIL" : "OK"));
+                        log_fatal("check accuracy (self-test) result is %s\n", (rc ? "FAIL" : "OK"));
 		}
 
 		if (!rc && ctx->conf.warmup) {

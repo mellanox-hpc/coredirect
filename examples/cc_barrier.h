@@ -166,6 +166,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
         return rc;
 }
 
+#if 0
 static int __algorithm_recursive_doubling_check( void *context )
 {
 	int rc = 0;
@@ -195,6 +196,56 @@ static int __algorithm_recursive_doubling_check( void *context )
                        my_proc, (unsigned long)wait, (unsigned long)expect_value, (unsigned long)(finish - start));
 
 	return rc;
+}
+#endif
+static int __algorithm_recursive_doubling_check2( void *context )
+{
+    int rc = 0;
+    struct cc_context *ctx = context;
+    int num_proc = ctx->conf.num_proc;
+    int my_proc = ctx->conf.my_proc;
+    int i;
+    int *check_array = NULL;
+    MPI_Request *reqs = NULL;
+    MPI_Status *statuses = NULL;
+    if (0 == my_proc) {
+        check_array = calloc(num_proc,sizeof(int));
+        reqs = calloc(num_proc,sizeof(MPI_Request));
+        statuses = calloc(num_proc, sizeof(MPI_Status));
+        for (i=0; i<num_proc; i++)
+            MPI_Irecv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&reqs[i]);
+    }
+
+    for (i=0; i<num_proc; i++) {
+        if (my_proc == i) {
+            fprintf(stderr,"barrier, rank %d\n",my_proc);
+            usleep(1000);
+            MPI_Send(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
+        }
+        __algorithm_recursive_doubling_proc(context);
+    }
+
+    if (0 == my_proc) {
+        MPI_Waitall(num_proc,reqs,statuses);
+        for (i=0; i<num_proc; i++) {
+            if (check_array[i] != i) {
+                rc = -1; break;
+            }
+        }
+        if (rc == -1) {
+            fprintf(stderr,"check=[");
+            for (i=0; i<num_proc-1; i++)
+                fprintf(stderr,"%d ",check_array[i]);
+            fprintf(stderr,"%d]\n",check_array[num_proc-1]);
+        }
+
+        free(check_array);
+        free(reqs);
+        free(statuses);
+    }
+
+    MPI_Allreduce(MPI_IN_PLACE,&rc,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
+    return rc;
 }
 
 static int __algorithm_recursive_doubling_setup( void *context )
@@ -250,11 +301,11 @@ static int __algorithm_recursive_doubling_close( void *context )
 }
 
 static struct cc_alg_info __barrier_algorithm_recursive_doubling_info = {
-		"Barrier: recursive doubling",
-		"barrier",
-		"This algorithm uses Managed QP, IBV_WR_CQE_WAIT, IBV_WR_SEND_ENABLE",
-		&__algorithm_recursive_doubling_setup,
-		&__algorithm_recursive_doubling_close,
-		&__algorithm_recursive_doubling_proc,
-		&__algorithm_recursive_doubling_check
+    "Barrier: recursive doubling",
+    "barrier",
+    "This algorithm uses Managed QP, IBV_WR_CQE_WAIT, IBV_WR_SEND_ENABLE",
+    &__algorithm_recursive_doubling_setup,
+    &__algorithm_recursive_doubling_close,
+    &__algorithm_recursive_doubling_proc,
+    &__algorithm_recursive_doubling_check2
 };
