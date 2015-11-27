@@ -18,10 +18,11 @@
 #include <time.h>
 #include <sys/resource.h>
 
-#include <infiniband/verbs.h>
 #include <infiniband/arch.h>
-#include <infiniband/umad.h>
+#include <infiniband/verbs.h>
+#include <infiniband/verbs_exp.h>
 
+#include <infiniband/umad.h>
 #include "config.h"
 
 /* MPI should be used for this version */
@@ -193,6 +194,7 @@ static uint16_t __get_local_lid(struct ibv_context *context, int port)
 	return attr.lid;
 }
 
+
 static int __post_read(struct cc_context *ctx, struct ibv_qp *qp, int count)
 {
 	int rc = 0;
@@ -200,12 +202,11 @@ static int __post_read(struct cc_context *ctx, struct ibv_qp *qp, int count)
 	struct ibv_recv_wr wr;
 	struct ibv_recv_wr *bad_wr;
 	int i = 0;
-
-	/* prepare the scatter/gather entry */
+        /* prepare the scatter/gather entry */
 	memset(&list, 0, sizeof(list));
 	list.addr = (uintptr_t)ctx->buf;
-	list.length = ctx->conf.size;
-	list.lkey = ctx->mr->lkey;
+        list.length = ctx->conf.size;
+        list.lkey = ctx->mr->lkey;
 
 	/* prepare the send work request */
 	memset(&wr, 0, sizeof(wr));
@@ -274,7 +275,8 @@ static int __init_ctx( struct cc_context *ctx )
 		log_fatal("memalign failed\n");
 	memset(ctx->buf, 0, ctx->conf.size * (ctx->conf.num_proc + 1));
 
-	ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, ctx->conf.size, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, ctx->conf.size,
+                             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
 	if (!ctx->mr)
 		log_fatal("ibv_reg_mr failed (buf=%p size=%d)\n", ctx->buf, ctx->conf.size);
 
@@ -396,8 +398,8 @@ static int __init_ctx( struct cc_context *ctx )
 	 */
 	for (i = 0; i < ctx->conf.num_proc; i++) {
 
-		if (i == ctx->conf.my_proc)
-			continue;
+                // if (i == ctx->conf.my_proc)
+                        // continue;
 
 		/*
 		 * 4.1 Create QPs for Peers
@@ -418,8 +420,8 @@ static int __init_ctx( struct cc_context *ctx )
 			log_trace("create QPs for peers ...scq=%p  rcq=%p\n", ctx->proc_array[i].scq, ctx->proc_array[i].rcq);
 
 
-			attr.comp_mask            = IBV_EXP_CQ_ATTR_CQ_CAP_FLAGS;
-			attr.moderation.cq_count  = 0;
+                        attr.comp_mask            = IBV_EXP_CQ_ATTR_CQ_CAP_FLAGS;
+                        attr.moderation.cq_count  = 0;
 			attr.moderation.cq_period = 0;
 			attr.cq_cap_flags         = IBV_EXP_CQ_IGNORE_OVERRUN;
 
@@ -438,14 +440,15 @@ static int __init_ctx( struct cc_context *ctx )
 			init_attr.cap.max_recv_wr  = ctx->conf.qp_rx_depth;
 			init_attr.cap.max_send_sge = 16;
 			init_attr.cap.max_recv_sge = 16;
-			init_attr.cap.max_inline_data = 0;
+                        // init_attr.cap.max_inline_data = 0;
 			init_attr.qp_type = IBV_QPT_RC;
-			init_attr.sq_sig_all = 0;
+                        // init_attr.sq_sig_all = 0;
 			init_attr.pd = ctx->pd;
 
 			{
-				init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
-				init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
+                                init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
+                                // init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
+                                init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
 				ctx->proc_array[i].qp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
 			}
 			if (!ctx->proc_array[i].qp)
@@ -457,8 +460,8 @@ static int __init_ctx( struct cc_context *ctx )
 			struct cc_proc_info local_info;
 			struct cc_proc_info remote_info;
 
-			if (i == ctx->conf.my_proc)
-				continue;
+                        // if (i == ctx->conf.my_proc)
+                                // continue;
 		/*
 		 * 4.2 Exchange information with Peers
 		 * =======================================
@@ -511,7 +514,7 @@ static int __init_ctx( struct cc_context *ctx )
 			attr.qp_state        = IBV_QPS_INIT;
 			attr.pkey_index      = 0;
 			attr.port_num        = ctx->ib_port;
-			attr.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+                        attr.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
 
 			rc = ibv_modify_qp(ctx->proc_array[i].qp, &attr,
 					IBV_QP_STATE              |
@@ -546,7 +549,7 @@ static int __init_ctx( struct cc_context *ctx )
 			if (rc)
 				log_fatal("ibv_modify_qp failed\n");
 
-			memset(&attr, 0, sizeof(attr));
+                        memset(&attr, 0, sizeof(attr));
 
 			attr.qp_state      = IBV_QPS_RTS;
 			attr.timeout       = 14;
@@ -575,6 +578,7 @@ static int __init_ctx( struct cc_context *ctx )
 
 #include "cc_latency_test.h"
 #include "cc_barrier.h"
+#include "cc_allreduce.h"
 
 static void __usage(const char *argv)
 {
@@ -619,10 +623,16 @@ static struct cc_alg_info     * get_test_algorithm(char *name)
 		return &__barrier_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
 	}
 
+        if (strstr(__allreduce_algorithm_recursive_doubling_info.short_name, name) != NULL) {
+            log_info("Chose allreduce based on recursive doubling \n");
+            return &__allreduce_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
+	}
+
 	if (strstr(__latency_test_info.short_name, name) != NULL) {
                 log_info("Chose latency test\n");
 		return &__latency_test_info;
 	}
+
 
 	return NULL;
 }
@@ -777,29 +787,31 @@ int main(int argc, char *argv[])
 
 	log_trace("device: %s\n", ib_devname);
 
-	/* Get active port for IB device */
-	if (!rc) {
-		int i = 0;
-		umad_ca_t ca;
-		umad_port_t port;
 
-		rc = umad_get_ca((char *)ib_devname, &ca);
-		if (rc)
-			log_fatal("umad_get_ca failed\n");
 
-		for (i = 0; i < ca.numports; i++) {
-			memset(&port, 0, sizeof(port));
-			if ((rc = umad_get_port(ca.ca_name, i+1, &port)) < 0)
-				log_fatal("IB device %s does not have active port\n", ib_devname);
+	// /* Get active port for IB device */
+	// if (!rc) {
+	// 	int i = 0;
+	// 	umad_ca_t ca;
+	// 	umad_port_t port;
 
-			if (port.state == 4) {
-				ctx->ib_port = i + 1;
-				break;
-			}
-		}
-		umad_release_ca(&ca);
-	}
+	// 	rc = umad_get_ca((char *)ib_devname, &ca);
+	// 	if (rc)
+	// 		log_fatal("umad_get_ca failed\n");
 
+	// 	for (i = 0; i < ca.numports; i++) {
+	// 		memset(&port, 0, sizeof(port));
+	// 		if ((rc = umad_get_port(ca.ca_name, i+1, &port)) < 0)
+	// 			log_fatal("IB device %s does not have active port\n", ib_devname);
+
+	// 		if (port.state == 4) {
+	// 			ctx->ib_port = i + 1;
+	// 			break;
+	// 		}
+	// 	}
+	// 	umad_release_ca(&ca);
+	// }
+        ctx->ib_port = 1;
 	log_trace("port: %d\n", ctx->ib_port);
 
 	/* Open IB device */
@@ -814,6 +826,7 @@ int main(int argc, char *argv[])
 		log_trace("initialization ...\n");
 		rc = __init_ctx(ctx);
 	}
+
 
 	/* Launch target procedure */
 	if (!rc && ctx->conf.algorithm) {
