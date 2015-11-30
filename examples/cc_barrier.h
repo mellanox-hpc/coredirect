@@ -2,6 +2,7 @@
  * Copyright (c) 2013 Mellanox Technologies.  All rights reserved.
  */
 
+#include "cc_rk_barrier.h"
 
 static struct {
 	struct ibv_exp_send_wr *wr;
@@ -11,7 +12,20 @@ static struct {
 	int cur_iteration;
 } __alg_obj;
 
+static int __algorithm_recursive_doubling_proc( void *context );
+static int __algorithm_recursive_doubling_setup( void *context );
+static int __algorithm_recursive_doubling_close( void *context );
+static int __algorithm_recursive_doubling_check2( void *context );
 
+static struct cc_alg_info __barrier_algorithm_recursive_doubling_info = {
+    "Barrier: recursive doubling",
+    "barrier",
+    "This algorithm uses Managed QP, IBV_WR_CQE_WAIT, IBV_WR_SEND_ENABLE",
+    &__algorithm_recursive_doubling_setup,
+    &__algorithm_recursive_doubling_close,
+    &__algorithm_recursive_doubling_proc,
+    &__algorithm_recursive_doubling_check2
+};
 
 static int __algorithm_recursive_doubling_proc( void *context )
 {
@@ -206,27 +220,27 @@ static int __algorithm_recursive_doubling_check2( void *context )
     int my_proc = ctx->conf.my_proc;
     int i;
     int *check_array = NULL;
-    MPI_Request *reqs = NULL;
-    MPI_Status *statuses = NULL;
+    MPI_Status st;
     if (0 == my_proc) {
         check_array = calloc(num_proc,sizeof(int));
-        reqs = calloc(num_proc,sizeof(MPI_Request));
-        statuses = calloc(num_proc, sizeof(MPI_Status));
-        for (i=0; i<num_proc; i++)
-            MPI_Irecv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&reqs[i]);
     }
 
     for (i=0; i<num_proc; i++) {
+        if (my_proc == 0 && i > 0) {
+            MPI_Recv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&st);
+        }
         if (my_proc == i) {
+
             fprintf(stderr,"barrier check, rank %d\n",my_proc);
             usleep(1000);
-            MPI_Send(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
+            if (i > 0) {
+                MPI_Send(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
+            }
         }
-        __algorithm_recursive_doubling_proc(context);
+        __barrier_algorithm_recursive_doubling_info.proc(context);
     }
 
     if (0 == my_proc) {
-        MPI_Waitall(num_proc,reqs,statuses);
         for (i=0; i<num_proc; i++) {
             if (check_array[i] != i) {
                 rc = -1; break;
@@ -240,8 +254,6 @@ static int __algorithm_recursive_doubling_check2( void *context )
         }
 
         free(check_array);
-        free(reqs);
-        free(statuses);
     }
 
     MPI_Allreduce(MPI_IN_PLACE,&rc,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
@@ -258,7 +270,18 @@ static int __algorithm_recursive_doubling_setup( void *context )
 	int num_proc_basic_group = 0;
 
 	/* calculate total number of procs in basic group and number of rounds
-	 */
+         */
+        int use_rk_barrier = 0;
+        char *var=getenv("CC_BARRIER_RK");
+        if (var)
+            use_rk_barrier = atoi(var);
+        if (use_rk_barrier) {
+            __barrier_algorithm_recursive_doubling_info.close =
+                __rk_barrier_close;
+            __barrier_algorithm_recursive_doubling_info.proc =
+                __rk_barrier_rec_doubling;
+            return __rk_barrier_setup(context);
+        }
 
 	total_round = __log2(ctx->conf.num_proc);
 	num_proc_basic_group = 1 << total_round;
@@ -300,12 +323,3 @@ static int __algorithm_recursive_doubling_close( void *context )
 	return rc;
 }
 
-static struct cc_alg_info __barrier_algorithm_recursive_doubling_info = {
-    "Barrier: recursive doubling",
-    "barrier",
-    "This algorithm uses Managed QP, IBV_WR_CQE_WAIT, IBV_WR_SEND_ENABLE",
-    &__algorithm_recursive_doubling_setup,
-    &__algorithm_recursive_doubling_close,
-    &__algorithm_recursive_doubling_proc,
-    &__algorithm_recursive_doubling_check2
-};

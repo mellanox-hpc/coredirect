@@ -447,8 +447,8 @@ static int __init_ctx( struct cc_context *ctx )
 
 			{
                                 init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
-                                // init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
-                                init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
+                                init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
+                                // init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
 				ctx->proc_array[i].qp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
 			}
 			if (!ctx->proc_array[i].qp)
@@ -578,7 +578,6 @@ static int __init_ctx( struct cc_context *ctx )
 
 #include "cc_latency_test.h"
 #include "cc_barrier.h"
-#include "cc_allreduce.h"
 
 static void __usage(const char *argv)
 {
@@ -623,12 +622,7 @@ static struct cc_alg_info     * get_test_algorithm(char *name)
 		return &__barrier_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
 	}
 
-        if (strstr(__allreduce_algorithm_recursive_doubling_info.short_name, name) != NULL) {
-            log_info("Chose allreduce based on recursive doubling \n");
-            return &__allreduce_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
-	}
-
-	if (strstr(__latency_test_info.short_name, name) != NULL) {
+        if (strstr(__latency_test_info.short_name, name) != NULL) {
                 log_info("Chose latency test\n");
 		return &__latency_test_info;
 	}
