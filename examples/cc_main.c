@@ -87,7 +87,7 @@ struct cc_proc {
 	struct ibv_cq          *scq;
 	struct ibv_cq          *rcq;
         struct cc_proc_info     info;
-    int credits;
+        int                     credits;
 };
 
 struct cc_context {
@@ -126,7 +126,7 @@ static int  __my_proc = 0;
 
 #define log_info(fmt, ...)  \
 	do {                                                           \
-		if (__my_proc == 0 && __debug_mask >= CC_LOG_INFO)                 \
+                if (__my_proc == 0 && __debug_mask >= CC_LOG_INFO)                 \
 			fprintf(stderr, "\033[0;3%sm" "[     INFO ] #%d: " fmt "\033[m", "4", __my_proc, ##__VA_ARGS__);    \
 	} while(0)
 
@@ -503,7 +503,7 @@ static int __init_ctx( struct cc_context *ctx )
 		{
 			struct ibv_qp_attr attr;
 
-                        if (__repost(ctx, ctx->proc_array[i].qp, ctx->conf.qp_rx_depth,i) != ctx->conf.qp_rx_depth)
+                        if (__repost(ctx, ctx->proc_array[i].qp, ctx->conf.qp_rx_depth, i) != ctx->conf.qp_rx_depth)
 				log_fatal("__post_read failed\n");
 
 			memset(&attr, 0, sizeof(attr));
@@ -738,7 +738,8 @@ int main(int argc, char *argv[])
 	struct ibv_device **dev_list = NULL;
 	struct ibv_device *ib_dev = NULL;
 	const char *ib_devname = NULL;
-
+        int ib_port = -1;
+        char *env = NULL;
 #if defined(USE_MPI)
 	MPI_Init(&argc, &argv);
 	log_trace("MPI is enabled\n");
@@ -747,7 +748,11 @@ int main(int argc, char *argv[])
 	/* Parse user provided command line parameters */
 	rc = __parse_cmd_line(ctx, argc, argv);
 
-        ib_devname = getenv("CD_IBDEV");
+        ib_devname = getenv("CC_IB_DEV");
+        env = getenv("CC_IB_PORT");
+        if (env) {
+            ib_port = atoi(env);
+        }
 	log_trace("my_proc: %d\n", ctx->conf.my_proc);
 	log_trace("num_proc: %d\n", ctx->conf.num_proc);
 
@@ -787,16 +792,26 @@ int main(int argc, char *argv[])
 		if (rc)
 			log_fatal("umad_get_ca failed\n");
 
-		for (i = 0; i < ca.numports; i++) {
+                if (ib_port == -1) {
+                    for (i = 0; i < ca.numports; i++) {
 			memset(&port, 0, sizeof(port));
 			if ((rc = umad_get_port(ca.ca_name, i+1, &port)) < 0)
-				log_fatal("IB device %s does not have active port\n", ib_devname);
+                            log_fatal("IB device %s does not have active port\n", ib_devname);
 
 			if (port.state == 4) {
-				ctx->ib_port = i + 1;
-				break;
+                            ctx->ib_port = i + 1;
+                            break;
 			}
-		}
+                    }
+                } else {
+                    memset(&port, 0, sizeof(port));
+                    if ((rc = umad_get_port(ca.ca_name, ib_port, &port)) < 0
+                        || port.state != 4) {
+                        log_fatal("User specified port %d is not active for IB device %s \n", ib_port, ib_devname);
+                    } else {
+                        ctx->ib_port = ib_port;
+                    }
+                }
 		umad_release_ca(&ca);
 	}
 
@@ -842,8 +857,9 @@ int main(int argc, char *argv[])
                 MPI_Barrier(MPI_COMM_WORLD);
                 if (!rc && ctx->conf.iters) {
 			struct cc_timer start_time;
-			struct cc_timer end_time;
-			int iters = ctx->conf.iters;
+                        struct cc_timer end_time;
+                        double wt, wt_av, cpus, cpus_av;
+                        int iters = ctx->conf.iters;
 
 			log_trace("start target procedure ...\n");
 			__timer(&start_time);
@@ -852,22 +868,23 @@ int main(int argc, char *argv[])
 			}
 			__timer(&end_time);
 
-                        double wt = (end_time.wall - start_time.wall) / (double)ctx->conf.iters;
-                        double wt_av = 0;
-                        double cpus = (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters;
-                        double cpus_av = 0;
+                        wt      = (end_time.wall - start_time.wall) / (double)ctx->conf.iters;
+                        wt_av   = 0;
+                        cpus    = (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters;
+                        cpus_av = 0;
+
                         MPI_Allreduce(&wt,&wt_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
                         MPI_Allreduce(&cpus,&cpus_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
                         wt_av = wt_av / ctx->conf.num_proc;
                         cpus_av = cpus_av / ctx->conf.num_proc;
-			sleep(3);
+
 			if (ctx->conf.my_proc == 0) {
-				log_info("Title                : %s\n", ctx->conf.algorithm->name);
-				log_info("Description          : %s\n", ctx->conf.algorithm->note);
-				log_info("Number of processes  : %d\n", ctx->conf.num_proc);
-				log_info("Iterations           : %d\n", ctx->conf.iters);
-                                log_info("Time wall (usec/op)  : %0.4f usec\n", wt_av);
-                                log_info("Time cpus (usec/op)  : %0.4f usec\n", cpus_av);
+                            log_info("Title                : %s\n", ctx->conf.algorithm->name);
+                            log_info("Description          : %s\n", ctx->conf.algorithm->note);
+                            log_info("Number of processes  : %d\n", ctx->conf.num_proc);
+                            log_info("Iterations           : %d\n", ctx->conf.iters);
+                            log_info("Time wall (usec/op)  : %0.4f usec\n", wt_av);
+                            log_info("Time cpus (usec/op)  : %0.4f usec\n", cpus_av);
 			}
 		}
 

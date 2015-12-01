@@ -27,6 +27,9 @@ The 'recursive doubling barrier' and the 'ping pong latency test' can be run lau
     mpirun -np $np   ./examples/ibv_cc_barrier --debug=0 --size=8 --np=$np --iters=1000 --warmup=0 --test=barrier
     mpirun -np $np   ./examples/ibv_cc_barrier --debug=0 --size=8 --np=$np --iters=1000 --warmup=0 --test=latency
 
+There are two available control environment variables:
+CC_IB_DEV  - specifies the device to be used (e.g. export CC_IB_DEV=mlx5_0)
+CC_IB_PORT - specifies the port to be used (e.g. export CC_IB_PORT=1)
 
 Running the 'cc2_pingpong test' 
 -----------------------------------
@@ -46,6 +49,7 @@ SEND-based
 
 Server:  taskset -c 0 $EXE_SEND -d mlx4_0 -s 8 -n 2000
 Client:  for i in 0 2 4 6 ; do eval "taskset -c $i $EXE_SEND  -d $HCA  -s 8 -n 2000 $SERVER  &" ;done
+
 
 
 

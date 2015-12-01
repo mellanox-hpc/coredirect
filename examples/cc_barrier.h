@@ -2,6 +2,12 @@
  * Copyright (c) 2013 Mellanox Technologies.  All rights reserved.
  */
 
+#define CALLOC_CHECK(_dst, _num, _type) do{                             \
+        _dst = (_type *)calloc(_num, sizeof(_type));                    \
+        if (!_dst) {                                                    \
+            log_fatal("Calloc for %lu bytes failed\n",_num*sizeof(_type)); \
+        }                                                               \
+    }while(0)
 
 static struct {
 	struct ibv_exp_send_wr *wr;
@@ -166,39 +172,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
         return rc;
 }
 
-#if 0
 static int __algorithm_recursive_doubling_check( void *context )
-{
-	int rc = 0;
-	struct cc_context *ctx = context;
-	time_t start;
-	time_t finish;
-	time_t wait;
-	time_t expect_value = 0;
-	int num_proc = 0;
-	int my_proc = 0;
-	const int wait_period = 5;
-
-	num_proc = ctx->conf.num_proc;
-	my_proc = ctx->conf.my_proc;
-
-	wait = my_proc * wait_period;
-	expect_value = ( (num_proc - my_proc - 1) > 0 ? (num_proc - my_proc - 1) * wait_period - 2 : 0 );
-
-	__sleep(wait);
-	start = time(NULL);
-	__algorithm_recursive_doubling_proc(context);
-	finish = time(NULL);
-
-	rc = (((finish - start) >= expect_value) ? 0 : -1);
-
-	log_trace("my_proc = %d wait = %ld limit = %ld actual wait = %ld\n",
-                       my_proc, (unsigned long)wait, (unsigned long)expect_value, (unsigned long)(finish - start));
-
-	return rc;
-}
-#endif
-static int __algorithm_recursive_doubling_check2( void *context )
 {
     int rc = 0;
     struct cc_context *ctx = context;
@@ -209,9 +183,9 @@ static int __algorithm_recursive_doubling_check2( void *context )
     MPI_Request *reqs = NULL;
     MPI_Status *statuses = NULL;
     if (0 == my_proc) {
-        check_array = calloc(num_proc,sizeof(int));
-        reqs = calloc(num_proc,sizeof(MPI_Request));
-        statuses = calloc(num_proc, sizeof(MPI_Status));
+        CALLOC_CHECK(check_array,num_proc,int);
+        CALLOC_CHECK(reqs,num_proc,MPI_Request);
+        CALLOC_CHECK(statuses,num_proc,MPI_Status);
         for (i=0; i<num_proc; i++)
             MPI_Irecv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&reqs[i]);
     }
@@ -307,5 +281,5 @@ static struct cc_alg_info __barrier_algorithm_recursive_doubling_info = {
     &__algorithm_recursive_doubling_setup,
     &__algorithm_recursive_doubling_close,
     &__algorithm_recursive_doubling_proc,
-    &__algorithm_recursive_doubling_check2
+    &__algorithm_recursive_doubling_check
 };
