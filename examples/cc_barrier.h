@@ -180,27 +180,26 @@ static int __algorithm_recursive_doubling_check( void *context )
     int my_proc = ctx->conf.my_proc;
     int i;
     int *check_array = NULL;
-    MPI_Request *reqs = NULL;
-    MPI_Status *statuses = NULL;
+    MPI_Status st;
     if (0 == my_proc) {
         CALLOC_CHECK(check_array,num_proc,int);
-        CALLOC_CHECK(reqs,num_proc,MPI_Request);
-        CALLOC_CHECK(statuses,num_proc,MPI_Status);
-        for (i=0; i<num_proc; i++)
-            MPI_Irecv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&reqs[i]);
     }
 
     for (i=0; i<num_proc; i++) {
+        if (my_proc == 0 && i > 0) {
+            MPI_Recv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&st);
+        }
         if (my_proc == i) {
             fprintf(stderr,"barrier check, rank %d\n",my_proc);
             usleep(1000);
-            MPI_Send(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
+            if (i > 0) {
+                MPI_Send(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
+            }
         }
         __algorithm_recursive_doubling_proc(context);
     }
 
     if (0 == my_proc) {
-        MPI_Waitall(num_proc,reqs,statuses);
         for (i=0; i<num_proc; i++) {
             if (check_array[i] != i) {
                 rc = -1; break;
@@ -212,12 +211,8 @@ static int __algorithm_recursive_doubling_check( void *context )
                 fprintf(stderr,"%d ",check_array[i]);
             fprintf(stderr,"%d]\n",check_array[num_proc-1]);
         }
-
         free(check_array);
-        free(reqs);
-        free(statuses);
     }
-
     MPI_Allreduce(MPI_IN_PLACE,&rc,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
     return rc;
 }
