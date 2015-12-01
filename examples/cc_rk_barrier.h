@@ -9,10 +9,29 @@ enum {
     NODE_EXTRA,
     NODE_PROXY
 };
+// static char *type_str[3] = {"BASE", "EXTRA", "PROXY"};
 
+#if 0
+#define DBG(color, fmt, ...) fprintf(stderr,color "rank %d: "fmt"\n" KNRM, \
+                              ctx->conf.my_proc, ## __VA_ARGS__)
+
+#define KNRM  "\x1B[0m"
+#define KRED  "\x1B[31m"
+#define KGRN  "\x1B[32m"
+#define KYEL  "\x1B[33m"
+#define KBLU  "\x1B[34m"
+#define KMAG  "\x1B[35m"
+#define KCYN  "\x1B[36m"
+#define KWHT  "\x1B[37m"
+
+#else
+#define DBG(color, fmt, ...)
+#endif
 static struct {
     int radix;
     int base_num;
+    int num_peers;
+    int *base_peers;
     int type;
     int steps;
     int res_num;
@@ -167,80 +186,59 @@ struct ibv_exp_task* get_enable_task(struct cc_context *ctx,
 }
 
 
-#define KNRM  "\x1B[0m"
-#define KRED  "\x1B[31m"
-#define KGRN  "\x1B[32m"
-#define KYEL  "\x1B[33m"
-#define KBLU  "\x1B[34m"
-#define KMAG  "\x1B[35m"
-#define KCYN  "\x1B[36m"
-#define KWHT  "\x1B[37m"
-
 
 static int __rk_barrier_rec_doubling( void *context)
 {
     int rc = 0;
     struct cc_context *ctx = context;
-    int my_id = ctx->conf.my_proc;
     int peer_id = 0;
     int r = __rk_barrier.radix;
 
     RK_BARRIER_RES_INIT(__rk_barrier);
-
     if (__rk_barrier.type == NODE_EXTRA) {
-        assert(0);
         post_send_wr(ctx, __rk_barrier.my_proxy);
-        // tail = get_enable_wait_task(ctx, __rk_barrier.my_proxy,
-                                    // __rk_barrier.my_proxy, 1);
+        post_enable_wr(ctx, __rk_barrier.my_proxy, ctx->mqp);
+        post_wait_wr(ctx, __rk_barrier.my_proxy, ctx->mqp, 1);
+        DBG(KCYN, "extra send to proxy %d and wait", __rk_barrier.my_proxy);
     }
 
     if (__rk_barrier.type == NODE_PROXY) {
-        assert(0);
-        // task = get_wait_task(ctx,__rk_barrier.my_extra,0);
+        post_wait_wr(ctx, __rk_barrier.my_extra, ctx->mqp, 0);
+        DBG(KCYN, "proxy wait for extra %d", __rk_barrier.my_proxy);
     }
 
     if (__rk_barrier.type == NODE_BASE || __rk_barrier.type == NODE_PROXY) {
         int round;
-        int dist = 1;
+        int peer_count = 0;
         for (round=0; round < __rk_barrier.steps; round++) {
-            int full_tree_size = dist*r;
             int i;
-            int id = my_id % full_tree_size;
-            int id_offset = my_id - id;
-            for (i=0; i<r-1; i++) {
-                peer_id = (id + (i+1)*dist) % full_tree_size + id_offset;
-                // fprintf(stderr,"rank %d: round %d: i %d: peer_id %d, id %d, signaled wait %d\n",
-                        // my_id, round, i, peer_id, id, signaled_wait);
+            int round_peer_count = peer_count;
+            for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
+                peer_id = __rk_barrier.base_peers[round_peer_count++];
                 post_send_wr(ctx, peer_id);
                 post_enable_wr(ctx, peer_id, ctx->mqp);
 
             }
 
-            for (i=0; i<r-1; i++) {
-                int signaled_wait =
-                    ((round == __rk_barrier.steps - 1) &&
-                     (i == r-2)) ? 1 : 0;
-                peer_id = (id + (i+1)*dist) % full_tree_size + id_offset;
+            round_peer_count = peer_count;
+            for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
+                int signaled_wait = (round_peer_count == __rk_barrier.num_peers - 1);
+                peer_id = __rk_barrier.base_peers[round_peer_count++];
                 post_wait_wr(ctx, peer_id, ctx->mqp, signaled_wait);
+                DBG(KBLU, "round %d: i %d: peer_id %d, signaled wait %d",
+                        round, i, peer_id, signaled_wait);
             }
 
-            dist *= r;
+            peer_count = round_peer_count;
         }
+
     }
 
     if (__rk_barrier.type == NODE_PROXY) {
-        assert(0);
         post_send_wr(ctx, __rk_barrier.my_extra);
-        // task = get_enable_task(ctx, __rk_barrier.my_extra, 0);
-        // if (tail) {
-            // tail->next =task;
-        // }
-        // tail = task;
+        post_enable_wr(ctx, __rk_barrier.my_extra, ctx->mqp);
+        DBG(KCYN, "proxy send to extra %d", __rk_barrier.my_extra);
     }
-    // rc = ibv_exp_post_task(ctx->ib_ctx, &__rk_barrier.tasks[0], &bad_task);
-
-    // if (rc)
-    //     log_fatal("post task fail\n");
 
     int poll = 0;
     struct ibv_wc wc;
@@ -252,6 +250,7 @@ static int __rk_barrier_rec_doubling( void *context)
         fprintf(stderr,"Got error wc: %s\n",ibv_wc_status_str(wc.status));
     }
 
+    DBG(KGRN, "barrier done");
     return rc;
 }
 
@@ -276,6 +275,11 @@ static int __rk_barrier_setup( void *context )
         __rk_barrier.steps++;
         __rk_barrier.base_num *= __rk_barrier.radix;
     }
+    int is_full_tree = (ctx->conf.num_proc == __rk_barrier.base_num);
+    if (!is_full_tree) __rk_barrier.steps++;
+
+    int num_full_subtrees = ctx->conf.num_proc / __rk_barrier.base_num;
+    __rk_barrier.base_num *= num_full_subtrees;
     log_info("allreduce radix: %d; base num: %d; steps: %d\n",
              __rk_barrier.radix, __rk_barrier.base_num,
              __rk_barrier.steps);
@@ -291,12 +295,41 @@ static int __rk_barrier_setup( void *context )
         total_steps++;
     } else {
         __rk_barrier.type = NODE_BASE;
+        __rk_barrier.my_extra = -1;
+    }
+    int r = __rk_barrier.radix;
+    int my_id = ctx->conf.my_proc;
+
+    __rk_barrier.base_peers = (int*)
+        calloc(__rk_barrier.steps*(r-1), sizeof(int));
+    int peer_count = 0;
+    int round;
+    int dist = 1;
+    for (round=0; round < __rk_barrier.steps; round++) {
+        int full_tree_size = dist*r;
+        int i;
+        int id = my_id % full_tree_size;
+        int id_offset = my_id - id;
+        for (i=0; i<r-1; i++) {
+            int peer_id = (id + (i+1)*dist) % full_tree_size + id_offset;
+            if (peer_id < __rk_barrier.base_num){
+                __rk_barrier.base_peers[peer_count++] =
+                    peer_id;
+            }
+        }
+        dist *= r;
     }
 
-    int num_wrs = total_steps*3*(__rk_barrier.radix-1);
+    __rk_barrier.num_peers = peer_count;
+
+    // fprintf(stderr,"rank %d: type %s, base_num %d, peer_count %d, extra/proxy %d\n",
+            // my_id, type_str[__rk_barrier.type], __rk_barrier.base_num,
+            // __rk_barrier.num_peers, __rk_barrier.my_proxy);
+    
+    int num_wrs = total_steps*3*(peer_count);
 
     __rk_barrier.wr = (struct ibv_exp_send_wr *)
-        malloc(num_wrs*sizeof(struct ibv_exp_send_wr));
+        memalign(sysconf(_SC_PAGESIZE), num_wrs*sizeof(struct ibv_exp_send_wr));
     assert(__rk_barrier.wr);
 
     __rk_barrier.res_num = num_wrs;
@@ -314,6 +347,9 @@ static int __rk_barrier_close( void *context )
     int rc = 0;
     if (__rk_barrier.wr)
         free(__rk_barrier.wr);
-
+    if (__rk_barrier.tasks)
+        free(__rk_barrier.tasks);
+    if (__rk_barrier.base_peers)
+        free(__rk_barrier.base_peers);
     return rc;
 }

@@ -440,9 +440,9 @@ static int __init_ctx( struct cc_context *ctx )
 			init_attr.cap.max_recv_wr  = ctx->conf.qp_rx_depth;
 			init_attr.cap.max_send_sge = 16;
 			init_attr.cap.max_recv_sge = 16;
-                        // init_attr.cap.max_inline_data = 0;
+                        init_attr.cap.max_inline_data = 0;
 			init_attr.qp_type = IBV_QPT_RC;
-                        // init_attr.sq_sig_all = 0;
+                        init_attr.sq_sig_all = 0;
 			init_attr.pd = ctx->pd;
 
 			{
