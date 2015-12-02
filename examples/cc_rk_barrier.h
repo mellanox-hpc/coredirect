@@ -34,6 +34,8 @@ char *__int_arr_2_str(int *arr, int num) {
     sprintf(_tmp_print+strlen(_tmp_print), "%d]", arr[num-1]);
     return &_tmp_print[0];
 }
+
+#define PRINT_TREES 0
 #else
 #define DBG(color, fmt, ...)
 #endif
@@ -53,7 +55,11 @@ static struct {
         int my_extra;
         int my_proxy;
     };
+    int fanin_root;
+    int *fanin_children;
+    int fanin_children_count;
 } __rk_barrier;
+
 
 #define RK_BARRIER_RES_INIT(__rk_barrier) do{                                   \
         __rk_barrier.cur_wr = 0;                                            \
@@ -366,6 +372,10 @@ static int __rk_barrier_rec_doubling_no_mq( void *context)
     return rc;
 }
 
+static int __compare(const void *v1, const void *v2) {
+    return *(int*)v1 > *(int*)v2;
+}
+
 
 static int __rk_barrier_setup( void *context )
 {
@@ -429,17 +439,73 @@ static int __rk_barrier_setup( void *context )
         }
         dist *= r;
     }
-
     __rk_barrier.num_peers = peer_count;
     log_info("allreduce radix: %d; base num: %d; steps %d: num_peers %d\n",
              __rk_barrier.radix, __rk_barrier.base_num,
              __rk_barrier.steps, peer_count);
 
-    DBG(KCYN, "peers: %s", __int_arr_2_str(__rk_barrier.base_peers, peer_count));
-    // fprintf(stderr,"rank %d: type %s, base_num %d, peer_count %d, extra/proxy %d\n",
-            // my_id, type_str[__rk_barrier.type], __rk_barrier.base_num,
-            // __rk_barrier.num_peers, __rk_barrier.my_proxy);
 
+
+    __rk_barrier.fanin_root = -1;
+    __rk_barrier.fanin_children =
+        (int*)calloc(__rk_barrier.steps*(r-1),sizeof(int));
+    
+    __rk_barrier.fanin_children_count = 0;
+    dist /= r;
+    int ch_count = 0;
+    for (round = __rk_barrier.steps-1; round >= 0; round--) {
+        int full_tree_size = dist*r;
+        int i;
+        int id = my_id % full_tree_size;
+        int id_offset = my_id - id;
+        if (id != 0) {
+            for (i=0; i<r-1; i++) {
+                int peer_id = (id + (i+1)*dist) % full_tree_size + id_offset;
+                if (peer_id < ctx->conf.num_proc && (peer_id - id_offset == 0)){
+                    __rk_barrier.fanin_root = peer_id;
+                }
+            }
+        }else{
+            for (i=0; i<r-1; i++) {
+                int peer_id = (id + (i+1)*dist) % full_tree_size + id_offset;
+                if (peer_id < ctx->conf.num_proc){
+                    __rk_barrier.fanin_children[ch_count++] = peer_id;
+                }
+            }
+            __rk_barrier.fanin_children_count = ch_count;
+        }
+        dist /= r;
+    }
+
+    if (__rk_barrier.fanin_children_count > 0) {
+        qsort(__rk_barrier.fanin_children,
+              __rk_barrier.fanin_children_count,
+              sizeof(int), __compare);
+    }
+#if defined(PRINT_TREES) && PRINT_TREES > 0
+    {
+        int i;
+        for (i=0; i<ctx->conf.num_proc; i++) {
+            if (i == my_id) {
+                DBG(KCYN, "peers: %s", __int_arr_2_str(__rk_barrier.base_peers, peer_count));
+                usleep(10000);
+            }
+            MPI_Barrier(MPI_COMM_WORLD);
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+        for (i=0; i<ctx->conf.num_proc; i++) {
+            if (i == my_id) {
+                DBG(KMAG, "FANIN: root %d, children %d : %s",
+                    __rk_barrier.fanin_root, __rk_barrier.fanin_children_count,
+                    __rk_barrier.fanin_children_count == 0 ? "" :
+                    __int_arr_2_str(__rk_barrier.fanin_children, __rk_barrier.fanin_children_count));
+            
+                usleep(10000);
+            }
+            MPI_Barrier(MPI_COMM_WORLD);
+        }
+    }
+#endif
     int num_wrs = total_steps*3*(peer_count);
 
     __rk_barrier.wr = (struct ibv_exp_send_wr *)
