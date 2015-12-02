@@ -11,7 +11,7 @@ enum {
 };
 // static char *type_str[3] = {"BASE", "EXTRA", "PROXY"};
 
-#if 0
+#if 1
 #define DBG(color, fmt, ...) fprintf(stderr,color "rank %d: "fmt"\n" KNRM, \
                               ctx->conf.my_proc, ## __VA_ARGS__)
 
@@ -24,6 +24,16 @@ enum {
 #define KCYN  "\x1B[36m"
 #define KWHT  "\x1B[37m"
 
+static char _tmp_print[1000];
+static inline
+char *__int_arr_2_str(int *arr, int num) {
+    sprintf(_tmp_print,"[");
+    int i;
+    for (i=0; i<num-1; i++)
+        sprintf(_tmp_print+strlen(_tmp_print), "%d, ", arr[i]);
+    sprintf(_tmp_print+strlen(_tmp_print), "%d]", arr[num-1]);
+    return &_tmp_print[0];
+}
 #else
 #define DBG(color, fmt, ...)
 #endif
@@ -425,10 +435,11 @@ static int __rk_barrier_setup( void *context )
              __rk_barrier.radix, __rk_barrier.base_num,
              __rk_barrier.steps, peer_count);
 
+    DBG(KCYN, "peers: %s", __int_arr_2_str(__rk_barrier.base_peers, peer_count));
     // fprintf(stderr,"rank %d: type %s, base_num %d, peer_count %d, extra/proxy %d\n",
             // my_id, type_str[__rk_barrier.type], __rk_barrier.base_num,
             // __rk_barrier.num_peers, __rk_barrier.my_proxy);
-    
+
     int num_wrs = total_steps*3*(peer_count);
 
     __rk_barrier.wr = (struct ibv_exp_send_wr *)
