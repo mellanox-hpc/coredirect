@@ -67,7 +67,8 @@ struct cc_conf {
 	int                     cq_tx_depth;
 	int                     cq_rx_depth;
 	int                     qp_tx_depth;
-	int                     qp_rx_depth;
+        int                     qp_rx_depth;
+        int                     use_mq;
 	int                     size;
 	struct cc_alg_info     *algorithm;
 };
@@ -88,6 +89,7 @@ struct cc_proc {
 	struct ibv_cq          *scq;
 	struct ibv_cq          *rcq;
         struct cc_proc_info     info;
+    int wait_count;
     int credits;
 };
 
@@ -280,102 +282,103 @@ static int __init_ctx( struct cc_context *ctx )
 	if (!ctx->mr)
 		log_fatal("ibv_reg_mr failed (buf=%p size=%d)\n", ctx->buf, ctx->conf.size);
 
-	/*
-	 * 2. Create Manage QP
-	 * =======================================
-	 */
-	log_trace("create manage QP ...\n");
-	// Note: mcq was previously created with 0x10 entries. It must be larger
-	ctx->mcq = ibv_create_cq(ctx->ib_ctx, 0x1000, NULL, NULL, 0);
-	if (!ctx->mcq)
-		log_fatal("ibv_create_cq failed\n");
+        if (ctx->conf.use_mq) {
+            /*
+             * 2. Create Manage QP
+             * =======================================
+             */
+            log_trace("create manage QP ...\n");
+            // Note: mcq was previously created with 0x10 entries. It must be larger
+            ctx->mcq = ibv_create_cq(ctx->ib_ctx, 0x1000, NULL, NULL, 0);
+            if (!ctx->mcq)
+                log_fatal("ibv_create_cq failed\n");
 
-	{
-		struct ibv_exp_qp_init_attr init_attr;
-		struct ibv_qp_attr attr;
+            {
+                struct ibv_exp_qp_init_attr init_attr;
+                struct ibv_qp_attr attr;
 
-		memset(&init_attr, 0, sizeof(init_attr));
+                memset(&init_attr, 0, sizeof(init_attr));
 
-		init_attr.qp_context = NULL;
-		init_attr.send_cq = ctx->mcq;
-		init_attr.recv_cq = ctx->mcq;
-		init_attr.srq = NULL;
-		init_attr.cap.max_send_wr  = 0x0400; // Default 0x40 was insufficient
-		init_attr.cap.max_recv_wr  = 0;
-		init_attr.cap.max_send_sge = 16;
-		init_attr.cap.max_recv_sge = 16;
-		init_attr.cap.max_inline_data = 0;
-		init_attr.qp_type = IBV_QPT_RC;
-		init_attr.sq_sig_all = 0;  // so that we can poll for a single completion for the entire list of WQEs posted to the regular QP,
-		init_attr.pd = ctx->pd;
+                init_attr.qp_context = NULL;
+                init_attr.send_cq = ctx->mcq;
+                init_attr.recv_cq = ctx->mcq;
+                init_attr.srq = NULL;
+                init_attr.cap.max_send_wr  = 0x0400; // Default 0x40 was insufficient
+                init_attr.cap.max_recv_wr  = 0;
+                init_attr.cap.max_send_sge = 16;
+                init_attr.cap.max_recv_sge = 16;
+                init_attr.cap.max_inline_data = 0;
+                init_attr.qp_type = IBV_QPT_RC;
+                init_attr.sq_sig_all = 0;  // so that we can poll for a single completion for the entire list of WQEs posted to the regular QP,
+                init_attr.pd = ctx->pd;
 
-		{
-			init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
-			init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
-			ctx->mqp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
-		}
-		if (!ctx->mqp)
-			log_fatal("ibv_create_qp_ex failed\n");
+                {
+                    init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
+                    init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
+                    ctx->mqp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
+                }
+                if (!ctx->mqp)
+                    log_fatal("ibv_create_qp_ex failed\n");
 
-		memset(&attr, 0, sizeof(attr));
+                memset(&attr, 0, sizeof(attr));
 
-		attr.qp_state        = IBV_QPS_INIT;
-		attr.pkey_index      = 0;
-		attr.port_num        = ctx->ib_port;
-		attr.qp_access_flags = 0;
+                attr.qp_state        = IBV_QPS_INIT;
+                attr.pkey_index      = 0;
+                attr.port_num        = ctx->ib_port;
+                attr.qp_access_flags = 0;
 
-		rc = ibv_modify_qp(ctx->mqp, &attr,
-				IBV_QP_STATE              |
-				IBV_QP_PKEY_INDEX         |
-				IBV_QP_PORT               |
-				IBV_QP_ACCESS_FLAGS);
-		if (rc)
-			log_fatal("ibv_modify_qp failed\n");
+                rc = ibv_modify_qp(ctx->mqp, &attr,
+                                   IBV_QP_STATE              |
+                                   IBV_QP_PKEY_INDEX         |
+                                   IBV_QP_PORT               |
+                                   IBV_QP_ACCESS_FLAGS);
+                if (rc)
+                    log_fatal("ibv_modify_qp failed\n");
 
-		memset(&attr, 0, sizeof(attr));
+                memset(&attr, 0, sizeof(attr));
 
-		attr.qp_state              = IBV_QPS_RTR;
-		attr.path_mtu              = IBV_MTU_1024;
-		attr.dest_qp_num	   = ctx->mqp->qp_num;
-		attr.rq_psn                = 0;
-		attr.max_dest_rd_atomic    = 1;
-		attr.min_rnr_timer         = 12;
-		attr.ah_attr.is_global     = 0;
-		attr.ah_attr.dlid          = 0;
-		attr.ah_attr.sl            = 0;
-		attr.ah_attr.src_path_bits = 0;
-		attr.ah_attr.port_num      = 0;
+                attr.qp_state              = IBV_QPS_RTR;
+                attr.path_mtu              = IBV_MTU_1024;
+                attr.dest_qp_num	   = ctx->mqp->qp_num;
+                attr.rq_psn                = 0;
+                attr.max_dest_rd_atomic    = 1;
+                attr.min_rnr_timer         = 12;
+                attr.ah_attr.is_global     = 0;
+                attr.ah_attr.dlid          = 0;
+                attr.ah_attr.sl            = 0;
+                attr.ah_attr.src_path_bits = 0;
+                attr.ah_attr.port_num      = 0;
 
-		rc = ibv_modify_qp(ctx->mqp, &attr,
-				IBV_QP_STATE              |
-				IBV_QP_AV                 |
-				IBV_QP_PATH_MTU           |
-				IBV_QP_DEST_QPN           |
-				IBV_QP_RQ_PSN             |
-				IBV_QP_MAX_DEST_RD_ATOMIC |
-				IBV_QP_MIN_RNR_TIMER);
-		if (rc)
-			log_fatal("ibv_modify_qp failed\n");
+                rc = ibv_modify_qp(ctx->mqp, &attr,
+                                   IBV_QP_STATE              |
+                                   IBV_QP_AV                 |
+                                   IBV_QP_PATH_MTU           |
+                                   IBV_QP_DEST_QPN           |
+                                   IBV_QP_RQ_PSN             |
+                                   IBV_QP_MAX_DEST_RD_ATOMIC |
+                                   IBV_QP_MIN_RNR_TIMER);
+                if (rc)
+                    log_fatal("ibv_modify_qp failed\n");
 
-		memset(&attr, 0, sizeof(attr));
+                memset(&attr, 0, sizeof(attr));
 
-		attr.qp_state      = IBV_QPS_RTS;
-		attr.timeout       = 14;
-		attr.retry_cnt     = 7;
-		attr.rnr_retry     = 7;
-		attr.sq_psn        = 0;
-		attr.max_rd_atomic = 1;
-		rc = ibv_modify_qp(ctx->mqp, &attr,
-				IBV_QP_STATE              |
-				IBV_QP_TIMEOUT            |
-				IBV_QP_RETRY_CNT          |
-				IBV_QP_RNR_RETRY          |
-				IBV_QP_SQ_PSN             |
-				IBV_QP_MAX_QP_RD_ATOMIC);
-		if (rc)
-			log_fatal("ibv_modify_qp failed\n");
-	}
-
+                attr.qp_state      = IBV_QPS_RTS;
+                attr.timeout       = 14;
+                attr.retry_cnt     = 7;
+                attr.rnr_retry     = 7;
+                attr.sq_psn        = 0;
+                attr.max_rd_atomic = 1;
+                rc = ibv_modify_qp(ctx->mqp, &attr,
+                                   IBV_QP_STATE              |
+                                   IBV_QP_TIMEOUT            |
+                                   IBV_QP_RETRY_CNT          |
+                                   IBV_QP_RNR_RETRY          |
+                                   IBV_QP_SQ_PSN             |
+                                   IBV_QP_MAX_QP_RD_ATOMIC);
+                if (rc)
+                    log_fatal("ibv_modify_qp failed\n");
+            }
+        }
 	ctx->proc_array = (struct cc_proc *)malloc(
 			ctx->conf.num_proc * sizeof(*ctx->proc_array));
 	if (!ctx->proc_array)
@@ -447,8 +450,19 @@ static int __init_ctx( struct cc_context *ctx )
 
 			{
                                 init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
-                                init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
-                                // init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
+                                if (ctx->conf.use_mq) {
+                                    init_attr.exp_create_flags =
+                                        IBV_EXP_QP_CREATE_CROSS_CHANNEL      |
+                                        IBV_EXP_QP_CREATE_MANAGED_SEND       |
+                                        IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW |
+                                        IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
+                                } else {
+                                    init_attr.exp_create_flags =
+                                        IBV_EXP_QP_CREATE_CROSS_CHANNEL      |
+                                        IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW |
+                                        IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
+;
+                                }
 				ctx->proc_array[i].qp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
 			}
 			if (!ctx->proc_array[i].qp)
@@ -742,7 +756,8 @@ int main(int argc, char *argv[])
 	struct ibv_device **dev_list = NULL;
 	struct ibv_device *ib_dev = NULL;
 	const char *ib_devname = NULL;
-
+        char *env = NULL;
+        int use_mq = 1;
 #if defined(USE_MPI)
 	MPI_Init(&argc, &argv);
 	log_trace("MPI is enabled\n");
@@ -752,6 +767,11 @@ int main(int argc, char *argv[])
 	rc = __parse_cmd_line(ctx, argc, argv);
 
         ib_devname = getenv("CD_IBDEV");
+        env = getenv("CC_USE_MQ");
+        if (env) {
+            use_mq = atoi(env);
+        }
+        ctx->conf.use_mq = use_mq;
 	log_trace("my_proc: %d\n", ctx->conf.my_proc);
 	log_trace("num_proc: %d\n", ctx->conf.num_proc);
 
@@ -867,8 +887,7 @@ int main(int argc, char *argv[])
                         MPI_Allreduce(&cpus,&cpus_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
                         wt_av = wt_av / ctx->conf.num_proc;
                         cpus_av = cpus_av / ctx->conf.num_proc;
-			sleep(3);
-			if (ctx->conf.my_proc == 0) {
+                        if (ctx->conf.my_proc == 0) {
 				log_info("Title                : %s\n", ctx->conf.algorithm->name);
 				log_info("Description          : %s\n", ctx->conf.algorithm->note);
 				log_info("Number of processes  : %d\n", ctx->conf.num_proc);

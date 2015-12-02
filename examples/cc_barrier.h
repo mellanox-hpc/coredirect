@@ -280,6 +280,10 @@ static int __algorithm_recursive_doubling_setup( void *context )
                 __rk_barrier_close;
             __barrier_algorithm_recursive_doubling_info.proc =
                 __rk_barrier_rec_doubling;
+            if (!ctx->conf.use_mq) {
+            __barrier_algorithm_recursive_doubling_info.proc =
+                __rk_barrier_rec_doubling_no_mq;
+            }
             return __rk_barrier_setup(context);
         }
 

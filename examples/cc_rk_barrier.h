@@ -47,9 +47,12 @@ static struct {
 
 #define RK_BARRIER_RES_INIT(__rk_barrier) do{                                   \
         __rk_barrier.cur_wr = 0;                                            \
-        __rk_barrier.cur_task = 0;                                          \
-        memset(__rk_barrier.wr,0,sizeof(*__rk_barrier.wr)*__rk_barrier.res_num);    \
+        __rk_barrier.cur_task = 0;                                      \
+        memset(__rk_barrier.wr,0,sizeof(*__rk_barrier.wr)*__rk_barrier.res_num); \
         memset(__rk_barrier.tasks,0,sizeof(*__rk_barrier.tasks)*__rk_barrier.res_num); \
+        int i;                                                          \
+        for (i=0; i<__rk_barrier.num_peers; i++)                        \
+            ctx->proc_array[__rk_barrier.base_peers[i]].wait_count = 1;                             \
     }while(0)
 
 #define GET_NEXT_WR() &__rk_barrier.wr[__rk_barrier.cur_wr++];
@@ -108,7 +111,8 @@ get_wait_wr(struct cc_context *ctx, int wait_peer, int signaled) {
     // fprintf(stderr,"rank %d: waiting for %d, signaled %d\n",
             // ctx->conf.my_proc, wait_peer, signaled);
     wait_wr->task.cqe_wait.cq = ctx->proc_array[wait_peer].rcq;
-    wait_wr->task.cqe_wait.cq_count = 1;
+    wait_wr->task.cqe_wait.cq_count = ctx->proc_array[wait_peer].wait_count--;
+    if (wait_wr->task.cqe_wait.cq_count < 0) wait_wr->task.cqe_wait.cq_count = 0;
     ctx->proc_array[wait_peer].credits--;
     if (ctx->proc_array[wait_peer].credits <= 10) {
         if (__repost(ctx, ctx->proc_array[wait_peer].qp, ctx->conf.qp_rx_depth, wait_peer) != ctx->conf.qp_rx_depth)
@@ -254,6 +258,104 @@ static int __rk_barrier_rec_doubling( void *context)
     return rc;
 }
 
+static int __rk_barrier_rec_doubling_no_mq( void *context)
+{
+    int rc = 0;
+    struct cc_context *ctx = context;
+    int peer_id = 0;
+    int my_id = ctx->conf.my_proc;
+    int r = __rk_barrier.radix;
+
+    RK_BARRIER_RES_INIT(__rk_barrier);
+    if (__rk_barrier.type == NODE_EXTRA) {
+        post_send_wr(ctx, __rk_barrier.my_proxy);
+        post_wait_wr(ctx, __rk_barrier.my_proxy, ctx->proc_array[my_id].qp, 1);
+        DBG(KCYN, "extra send to proxy %d and wait", __rk_barrier.my_proxy);
+    }
+
+    if (__rk_barrier.type == NODE_PROXY) {
+        // DBG(KCYN, "proxy wait for extra %d", __rk_barrier.my_proxy);
+        int round_peer_count  = 0;
+        int i;
+        for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
+            peer_id = __rk_barrier.base_peers[round_peer_count++];
+            post_wait_wr(ctx, __rk_barrier.my_extra, ctx->proc_array[peer_id].qp,0);
+        }
+    }
+
+    if (__rk_barrier.type == NODE_BASE || __rk_barrier.type == NODE_PROXY) {
+        int round;
+        int peer_count = 0;
+        for (round=0; round < __rk_barrier.steps; round++) {
+            int i;
+            int round_peer_count = peer_count;
+
+            if (round > 0) {
+                for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
+                    int j;
+                    peer_id = __rk_barrier.base_peers[round_peer_count++];
+                    if (__rk_barrier.type == NODE_PROXY) {
+                        post_wait_wr(ctx, __rk_barrier.my_extra, ctx->proc_array[peer_id].qp, 0);
+                    }
+                    for (j=0; j<round*(r-1); j++){
+                        DBG(KBLU, "round %d: wait [%d]: wait_for_peer %d, peer_id %d",
+                            round, i,__rk_barrier.base_peers[j],  peer_id);
+
+                        post_wait_wr(ctx, __rk_barrier.base_peers[j],ctx->proc_array[peer_id].qp, 0);
+                    }
+                }
+            }
+
+            round_peer_count = peer_count;
+            for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
+                peer_id = __rk_barrier.base_peers[round_peer_count++];
+                post_send_wr(ctx, peer_id);
+                DBG(KBLU, "round %d: i %d: peer_id %d",
+                        round, i, peer_id);
+            }
+            peer_count = round_peer_count;
+        }
+
+    }
+    struct ibv_cq *poll_cq = NULL;
+    if (__rk_barrier.type == NODE_PROXY) {
+        int i;
+        for (i=0; i<__rk_barrier.num_peers; i++) {
+            post_wait_wr(ctx, __rk_barrier.base_peers[i],
+                         ctx->proc_array[__rk_barrier.my_extra].qp,
+                         i == (__rk_barrier.num_peers - 1));
+        }
+        poll_cq  = ctx->proc_array[__rk_barrier.my_extra].scq;
+        post_send_wr(ctx, __rk_barrier.my_extra);
+        DBG(KCYN, "proxy send to extra %d", __rk_barrier.my_extra);
+    } else if (__rk_barrier.type == NODE_BASE) {
+        int i;
+        for (i=0; i<__rk_barrier.num_peers; i++) {
+            DBG(KBLU, "final: wait_for_peer %d posted to self, signalled %d",
+                __rk_barrier.base_peers[i], i == (__rk_barrier.num_peers - 1));
+            post_wait_wr(ctx, __rk_barrier.base_peers[i],
+                         ctx->proc_array[my_id].qp,
+                         i == (__rk_barrier.num_peers - 1));
+        }
+        poll_cq  = ctx->proc_array[my_id].scq;
+    } else {
+        poll_cq  = ctx->proc_array[__rk_barrier.my_proxy].scq;
+    }
+
+    int poll = 0;
+    struct ibv_wc wc;
+    while (poll == 0) {
+        poll = ibv_poll_cq(poll_cq,
+                           1, &wc);
+    }
+    if (poll < 0 || wc.status != IBV_WC_SUCCESS) {
+        fprintf(stderr,"Got error wc: %s\n",ibv_wc_status_str(wc.status));
+    }
+
+    DBG(KGRN, "barrier done");
+    return rc;
+}
+
 
 static int __rk_barrier_setup( void *context )
 {
@@ -280,9 +382,6 @@ static int __rk_barrier_setup( void *context )
 
     int num_full_subtrees = ctx->conf.num_proc / __rk_barrier.base_num;
     __rk_barrier.base_num *= num_full_subtrees;
-    log_info("allreduce radix: %d; base num: %d; steps: %d\n",
-             __rk_barrier.radix, __rk_barrier.base_num,
-             __rk_barrier.steps);
     int total_steps = __rk_barrier.steps;
     if (ctx->conf.my_proc >= __rk_barrier.base_num) {
         __rk_barrier.type = NODE_EXTRA;
@@ -302,6 +401,7 @@ static int __rk_barrier_setup( void *context )
 
     __rk_barrier.base_peers = (int*)
         calloc(__rk_barrier.steps*(r-1), sizeof(int));
+
     int peer_count = 0;
     int round;
     int dist = 1;
@@ -321,6 +421,9 @@ static int __rk_barrier_setup( void *context )
     }
 
     __rk_barrier.num_peers = peer_count;
+    log_info("allreduce radix: %d; base num: %d; steps %d: num_peers %d\n",
+             __rk_barrier.radix, __rk_barrier.base_num,
+             __rk_barrier.steps, peer_count);
 
     // fprintf(stderr,"rank %d: type %s, base_num %d, peer_count %d, extra/proxy %d\n",
             // my_id, type_str[__rk_barrier.type], __rk_barrier.base_num,
