@@ -219,42 +219,43 @@ static int __algorithm_recursive_doubling_check2( void *context )
     int num_proc = ctx->conf.num_proc;
     int my_proc = ctx->conf.my_proc;
     int i;
-    int *check_array = NULL;
-    MPI_Status st;
-    if (0 == my_proc) {
-        check_array = calloc(num_proc,sizeof(int));
-    }
+    // int *check_array = NULL;
+    // MPI_Status st;
+    // if (0 == my_proc) {
+        // check_array = calloc(num_proc,sizeof(int));
+    // }
+    srand(my_proc*time(NULL));
+    usleep(rand() % 1000000);
 
     for (i=0; i<num_proc; i++) {
-        if (my_proc == 0 && i > 0) {
-            MPI_Recv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&st);
-        }
+        // if (my_proc == 0 && i > 0) {
+            // MPI_Recv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&st);
+        // }
         if (my_proc == i) {
-
             fprintf(stderr,"barrier check, rank %d\n",my_proc);
-            usleep(1000);
-            if (i > 0) {
-                MPI_Send(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
-            }
+            usleep(10000);
+            // if (i > 0) {
+                // MPI_Ssend(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
+            // }
         }
         __barrier_algorithm_recursive_doubling_info.proc(context);
     }
 
-    if (0 == my_proc) {
-        for (i=0; i<num_proc; i++) {
-            if (check_array[i] != i) {
-                rc = -1; break;
-            }
-        }
-        if (rc == -1) {
-            fprintf(stderr,"check=[");
-            for (i=0; i<num_proc-1; i++)
-                fprintf(stderr,"%d ",check_array[i]);
-            fprintf(stderr,"%d]\n",check_array[num_proc-1]);
-        }
+    // if (0 == my_proc) {
+        // for (i=0; i<num_proc; i++) {
+            // if (check_array[i] != i) {
+                // rc = -1; break;
+            // }
+        // }
+        // if (rc == -1) {
+            // fprintf(stderr,"check=[");
+            // for (i=0; i<num_proc-1; i++)
+                // fprintf(stderr,"%d ",check_array[i]);
+            // fprintf(stderr,"%d]\n",check_array[num_proc-1]);
+        // }
 
-        free(check_array);
-    }
+        // free(check_array);
+    // }
 
     MPI_Allreduce(MPI_IN_PLACE,&rc,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
     return rc;
@@ -272,9 +273,14 @@ static int __algorithm_recursive_doubling_setup( void *context )
 	/* calculate total number of procs in basic group and number of rounds
          */
         int use_rk_barrier = 0;
+        int use_ff_barrier = 0;
         char *var=getenv("CC_BARRIER_RK");
         if (var)
             use_rk_barrier = atoi(var);
+        var=getenv("CC_BARRIER_FF");
+        if (var)
+            use_ff_barrier = atoi(var);
+
         if (use_rk_barrier) {
             __barrier_algorithm_recursive_doubling_info.close =
                 __rk_barrier_close;
@@ -284,6 +290,12 @@ static int __algorithm_recursive_doubling_setup( void *context )
             __barrier_algorithm_recursive_doubling_info.proc =
                 __rk_barrier_rec_doubling_no_mq;
             }
+            return __rk_barrier_setup(context);
+        } else if (use_ff_barrier) {
+            __barrier_algorithm_recursive_doubling_info.close =
+                __rk_barrier_close;
+            __barrier_algorithm_recursive_doubling_info.proc =
+                __rk_ff_barrier;
             return __rk_barrier_setup(context);
         }
 

@@ -314,7 +314,7 @@ static int __init_ctx( struct cc_context *ctx )
 
                 {
                     init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
-                    init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
+                    init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW;
                     ctx->mqp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
                 }
                 if (!ctx->mqp)
@@ -636,6 +636,11 @@ static struct cc_alg_info     * get_test_algorithm(char *name)
 		return &__barrier_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
 	}
 
+        if (strstr(__rk_fanin_info.short_name, name) != NULL) {
+                log_info("Chose barrier based on recursive doubling \n");
+                return &__rk_fanin_info;  // reference it otherwise we get 'defined but not used' error in compilation
+	}
+
         if (strstr(__latency_test_info.short_name, name) != NULL) {
                 log_info("Chose latency test\n");
 		return &__latency_test_info;
@@ -655,9 +660,9 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 	ctx->conf.warmup = 10;
 	ctx->conf.size = 1;
 	ctx->conf.cq_tx_depth = 0x0200;
-	ctx->conf.cq_rx_depth = 0x0200;
-	ctx->conf.qp_tx_depth = 0x0200;
-	ctx->conf.qp_rx_depth = 0x0200;
+        ctx->conf.cq_rx_depth = 0x0200;
+        ctx->conf.qp_tx_depth = 0x0200;
+        ctx->conf.qp_rx_depth = 0x0200;
 	ctx->conf.algorithm = &__barrier_algorithm_recursive_doubling_info;
 
 
@@ -758,6 +763,7 @@ int main(int argc, char *argv[])
 	const char *ib_devname = NULL;
         char *env = NULL;
         int use_mq = 1;
+        int ib_port = 1;
 #if defined(USE_MPI)
 	MPI_Init(&argc, &argv);
 	log_trace("MPI is enabled\n");
@@ -766,12 +772,17 @@ int main(int argc, char *argv[])
 	/* Parse user provided command line parameters */
 	rc = __parse_cmd_line(ctx, argc, argv);
 
-        ib_devname = getenv("CD_IBDEV");
+        ib_devname = getenv("CC_IB_DEV");
         env = getenv("CC_USE_MQ");
         if (env) {
             use_mq = atoi(env);
         }
         ctx->conf.use_mq = use_mq;
+        env = getenv("CC_IB_PORT");
+        if (env) {
+            ib_port = atoi(env);
+        }
+
 	log_trace("my_proc: %d\n", ctx->conf.my_proc);
 	log_trace("num_proc: %d\n", ctx->conf.num_proc);
 
@@ -825,7 +836,7 @@ int main(int argc, char *argv[])
 	// 	}
 	// 	umad_release_ca(&ca);
 	// }
-        ctx->ib_port = 1;
+        ctx->ib_port = ib_port;
 	log_trace("port: %d\n", ctx->ib_port);
 
 	/* Open IB device */
@@ -862,37 +873,53 @@ int main(int argc, char *argv[])
 			int iters = ctx->conf.warmup;
 
 			log_trace("warmup ...\n");
-			while (!rc && iters--) {
-				rc = ctx->conf.algorithm->proc(ctx);
+                        while (!rc && iters--) {
+                            if (ctx->conf.algorithm == &__rk_fanin_info) {
+                                MPI_Barrier(MPI_COMM_WORLD);
+                            }
+                            rc = ctx->conf.algorithm->proc(ctx);
 			}
-		}
+                }
+
                 MPI_Barrier(MPI_COMM_WORLD);
                 if (!rc && ctx->conf.iters) {
 			struct cc_timer start_time;
-			struct cc_timer end_time;
+                        struct cc_timer end_time;
+                        double wt = 0;
+                        double cpus = 0;
 			int iters = ctx->conf.iters;
 
 			log_trace("start target procedure ...\n");
-			__timer(&start_time);
-			while (!rc && iters--) {
-				rc = ctx->conf.algorithm->proc(ctx);
-			}
-			__timer(&end_time);
 
-                        double wt = (end_time.wall - start_time.wall) / (double)ctx->conf.iters;
-                        double wt_av = 0;
-                        double cpus = (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters;
+                        while (!rc && iters--) {
+                            // if (ctx->conf.algorithm == &__rk_fanin_info) {
+                                MPI_Barrier(MPI_COMM_WORLD);
+                            // }
+                            __timer(&start_time);
+                            rc = ctx->conf.algorithm->proc(ctx);
+                            __timer(&end_time);
+                            wt += (end_time.wall - start_time.wall);
+                            cpus += (end_time.cpus - start_time.cpus);
+                        }
+
+
+                        cpus /= (double)ctx->conf.iters;
+                        wt /= (double)ctx->conf.iters;
+
+                        double wt_av = 0, wt_min = 0, wt_max = 0;
                         double cpus_av = 0;
                         MPI_Allreduce(&wt,&wt_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
+                        MPI_Allreduce(&wt,&wt_min,1,MPI_DOUBLE,MPI_MIN,MPI_COMM_WORLD);
+                        MPI_Allreduce(&wt,&wt_max,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
                         MPI_Allreduce(&cpus,&cpus_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
                         wt_av = wt_av / ctx->conf.num_proc;
                         cpus_av = cpus_av / ctx->conf.num_proc;
                         if (ctx->conf.my_proc == 0) {
-				log_info("Title                : %s\n", ctx->conf.algorithm->name);
-				log_info("Description          : %s\n", ctx->conf.algorithm->note);
-				log_info("Number of processes  : %d\n", ctx->conf.num_proc);
-				log_info("Iterations           : %d\n", ctx->conf.iters);
-                                log_info("Time wall (usec/op)  : %0.4f usec\n", wt_av);
+				log_info("Title                                      : %s\n", ctx->conf.algorithm->name);
+				log_info("Description                                : %s\n", ctx->conf.algorithm->note);
+				log_info("Number of processes                        : %d\n", ctx->conf.num_proc);
+                                log_info("Iterations                                 : %d\n", ctx->conf.iters);
+                                log_info("Time wall [us/op] (min : max : av : root)  : %0.4f : %0.4f : %0.4f : %0.4f us\n", wt_min, wt_max, wt_av, wt);
                                 log_info("Time cpus (usec/op)  : %0.4f usec\n", cpus_av);
 			}
 		}
@@ -903,14 +930,15 @@ int main(int argc, char *argv[])
 		}
 	}
 
+
 	log_trace("finalization ...\n");
-	if (ctx->ib_ctx)
-		ibv_close_device(ctx->ib_ctx);
-	if (dev_list)
-		ibv_free_device_list(dev_list);
+        if (ctx->ib_ctx)
+                ibv_close_device(ctx->ib_ctx);
+        if (dev_list)
+                ibv_free_device_list(dev_list);
 
 #if defined(USE_MPI)
-	MPI_Barrier(MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
 	MPI_Finalize();
 #endif
 

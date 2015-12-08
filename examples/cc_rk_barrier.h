@@ -11,7 +11,21 @@ enum {
 };
 // static char *type_str[3] = {"BASE", "EXTRA", "PROXY"};
 
-#if 1
+static int __rk_barrier_setup(void*);
+static int __rk_barrier_close(void*);
+static int __rk_fanin(void*);
+static int __rk_fanin_check(void*);
+static struct cc_alg_info __rk_fanin_info = {
+    "Fanin: recursive K-ing",
+    "fanin",
+    "This algorithm uses Managed QP, IBV_WR_CQE_WAIT, IBV_WR_SEND_ENABLE",
+    &__rk_barrier_setup,
+    &__rk_barrier_close,
+    &__rk_fanin,
+    &__rk_fanin_check
+};
+
+#if 0
 #define DBG(color, fmt, ...) fprintf(stderr,color "rank %d: "fmt"\n" KNRM, \
                               ctx->conf.my_proc, ## __VA_ARGS__)
 
@@ -35,7 +49,7 @@ char *__int_arr_2_str(int *arr, int num) {
     return &_tmp_print[0];
 }
 
-#define PRINT_TREES 0
+#define PRINT_TREES 1
 #else
 #define DBG(color, fmt, ...)
 #endif
@@ -372,6 +386,85 @@ static int __rk_barrier_rec_doubling_no_mq( void *context)
     return rc;
 }
 
+
+static int __rk_fanin(void *context)
+{
+
+    struct cc_context *ctx = context;
+    int i;
+    RK_BARRIER_RES_INIT(__rk_barrier);
+
+
+    for (i=0; i<__rk_barrier.fanin_children_count; i++) {
+        post_wait_wr(ctx, __rk_barrier.fanin_children[i],
+                     ctx->mqp,
+                    __rk_barrier.fanin_root == -1 &&
+                     i == __rk_barrier.fanin_children_count - 1);
+    }
+
+    if (__rk_barrier.fanin_root != -1) {
+        post_send_wr(ctx, __rk_barrier.fanin_root);
+        post_enable_wr(ctx, __rk_barrier.fanin_root, ctx->mqp);
+    }else {
+        int poll = 0;
+        struct ibv_wc wc;
+        while (poll == 0) {
+            poll = ibv_poll_cq(ctx->mcq,
+                               1, &wc);
+        }
+        if (poll < 0 || wc.status != IBV_WC_SUCCESS) {
+            fprintf(stderr,"Got error wc: %s\n",ibv_wc_status_str(wc.status));
+        }
+        
+    }
+    return 0;
+
+}
+
+static int __rk_ff_barrier(void *context)
+{
+    struct cc_context *ctx = context;
+    int i;
+    RK_BARRIER_RES_INIT(__rk_barrier);
+
+
+    for (i=0; i<__rk_barrier.fanin_children_count; i++) {
+        post_wait_wr(ctx, __rk_barrier.fanin_children[i],
+                     ctx->mqp,
+                     __rk_barrier.fanin_root == -1 &&
+                     i == __rk_barrier.fanin_children_count - 1);
+    }
+
+    if (__rk_barrier.fanin_root != -1) {
+        post_send_wr(ctx, __rk_barrier.fanin_root);
+        post_enable_wr(ctx, __rk_barrier.fanin_root, ctx->mqp);
+        post_wait_wr(ctx, __rk_barrier.fanin_root,
+                     ctx->mqp,1);
+    }
+
+    for (i=0; i<__rk_barrier.fanin_children_count; i++) {
+        int peer = __rk_barrier.fanin_children[__rk_barrier.fanin_children_count-1-i];
+        post_send_wr(ctx, peer);
+        post_enable_wr(ctx, peer, ctx->mqp);
+    }
+
+
+
+    int poll = 0;
+    struct ibv_wc wc;
+    while (poll == 0) {
+        poll = ibv_poll_cq(ctx->mcq,
+                           1, &wc);
+    }
+    if (poll < 0 || wc.status != IBV_WC_SUCCESS) {
+        fprintf(stderr,"Got error wc: %s\n",ibv_wc_status_str(wc.status));
+    }
+        
+
+    return 0;
+
+}
+
 static int __compare(const void *v1, const void *v2) {
     return *(int*)v1 > *(int*)v2;
 }
@@ -507,11 +600,13 @@ static int __rk_barrier_setup( void *context )
     }
 #endif
     int num_wrs = total_steps*3*(peer_count);
-
+    if (ctx->conf.algorithm->proc == &__rk_fanin ||
+        ctx->conf.algorithm->proc == &__rk_ff_barrier) {
+        num_wrs = 3*(__rk_barrier.fanin_children_count + 1);
+    }
     __rk_barrier.wr = (struct ibv_exp_send_wr *)
         memalign(sysconf(_SC_PAGESIZE), num_wrs*sizeof(struct ibv_exp_send_wr));
     assert(__rk_barrier.wr);
-
     __rk_barrier.res_num = num_wrs;
     __rk_barrier.tasks = (struct ibv_exp_task*)
         malloc(num_wrs*sizeof(struct ibv_exp_task));
@@ -532,4 +627,8 @@ static int __rk_barrier_close( void *context )
     if (__rk_barrier.base_peers)
         free(__rk_barrier.base_peers);
     return rc;
+}
+
+static int __rk_fanin_check(void *context) {
+    return 0;
 }
