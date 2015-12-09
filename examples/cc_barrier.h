@@ -15,7 +15,7 @@ static struct {
 static int __algorithm_recursive_doubling_proc( void *context );
 static int __algorithm_recursive_doubling_setup( void *context );
 static int __algorithm_recursive_doubling_close( void *context );
-static int __algorithm_recursive_doubling_check2( void *context );
+static int __algorithm_recursive_doubling_check( void *context );
 
 static struct cc_alg_info __barrier_algorithm_recursive_doubling_info = {
     "Barrier: recursive doubling",
@@ -24,7 +24,7 @@ static struct cc_alg_info __barrier_algorithm_recursive_doubling_info = {
     &__algorithm_recursive_doubling_setup,
     &__algorithm_recursive_doubling_close,
     &__algorithm_recursive_doubling_proc,
-    &__algorithm_recursive_doubling_check2
+    &__algorithm_recursive_doubling_check
 };
 
 static int __algorithm_recursive_doubling_proc( void *context )
@@ -179,86 +179,10 @@ static int __algorithm_recursive_doubling_proc( void *context )
 	}
         return rc;
 }
-
-#if 0
 static int __algorithm_recursive_doubling_check( void *context )
 {
-	int rc = 0;
-	struct cc_context *ctx = context;
-	time_t start;
-	time_t finish;
-	time_t wait;
-	time_t expect_value = 0;
-	int num_proc = 0;
-	int my_proc = 0;
-	const int wait_period = 5;
-
-	num_proc = ctx->conf.num_proc;
-	my_proc = ctx->conf.my_proc;
-
-	wait = my_proc * wait_period;
-	expect_value = ( (num_proc - my_proc - 1) > 0 ? (num_proc - my_proc - 1) * wait_period - 2 : 0 );
-
-	__sleep(wait);
-	start = time(NULL);
-	__algorithm_recursive_doubling_proc(context);
-	finish = time(NULL);
-
-	rc = (((finish - start) >= expect_value) ? 0 : -1);
-
-	log_trace("my_proc = %d wait = %ld limit = %ld actual wait = %ld\n",
-                       my_proc, (unsigned long)wait, (unsigned long)expect_value, (unsigned long)(finish - start));
-
-	return rc;
-}
-#endif
-static int __algorithm_recursive_doubling_check2( void *context )
-{
-    int rc = 0;
-    struct cc_context *ctx = context;
-    int num_proc = ctx->conf.num_proc;
-    int my_proc = ctx->conf.my_proc;
-    int i;
-    // int *check_array = NULL;
-    // MPI_Status st;
-    // if (0 == my_proc) {
-        // check_array = calloc(num_proc,sizeof(int));
-    // }
-    srand(my_proc*time(NULL));
-    usleep(rand() % 1000000);
-
-    for (i=0; i<num_proc; i++) {
-        // if (my_proc == 0 && i > 0) {
-            // MPI_Recv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&st);
-        // }
-        if (my_proc == i) {
-            fprintf(stderr,"barrier check, rank %d\n",my_proc);
-            usleep(10000);
-            // if (i > 0) {
-                // MPI_Ssend(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
-            // }
-        }
-        __barrier_algorithm_recursive_doubling_info.proc(context);
-    }
-
-    // if (0 == my_proc) {
-        // for (i=0; i<num_proc; i++) {
-            // if (check_array[i] != i) {
-                // rc = -1; break;
-            // }
-        // }
-        // if (rc == -1) {
-            // fprintf(stderr,"check=[");
-            // for (i=0; i<num_proc-1; i++)
-                // fprintf(stderr,"%d ",check_array[i]);
-            // fprintf(stderr,"%d]\n",check_array[num_proc-1]);
-        // }
-
-        // free(check_array);
-    // }
-
-    MPI_Allreduce(MPI_IN_PLACE,&rc,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
-    return rc;
+    return __barrier_check(context,
+                           &__algorithm_recursive_doubling_proc);
 }
 
 static int __algorithm_recursive_doubling_setup( void *context )
@@ -272,34 +196,7 @@ static int __algorithm_recursive_doubling_setup( void *context )
 
 	/* calculate total number of procs in basic group and number of rounds
          */
-        int use_rk_barrier = 0;
-        int use_ff_barrier = 0;
-        char *var=getenv("CC_BARRIER_RK");
-        if (var)
-            use_rk_barrier = atoi(var);
-        var=getenv("CC_BARRIER_FF");
-        if (var)
-            use_ff_barrier = atoi(var);
-
-        if (use_rk_barrier) {
-            __barrier_algorithm_recursive_doubling_info.close =
-                __rk_barrier_close;
-            __barrier_algorithm_recursive_doubling_info.proc =
-                __rk_barrier_rec_doubling;
-            if (!ctx->conf.use_mq) {
-            __barrier_algorithm_recursive_doubling_info.proc =
-                __rk_barrier_rec_doubling_no_mq;
-            }
-            return __rk_barrier_setup(context);
-        } else if (use_ff_barrier) {
-            __barrier_algorithm_recursive_doubling_info.close =
-                __rk_barrier_close;
-            __barrier_algorithm_recursive_doubling_info.proc =
-                __rk_ff_barrier;
-            return __rk_barrier_setup(context);
-        }
-
-	total_round = __log2(ctx->conf.num_proc);
+        total_round = __log2(ctx->conf.num_proc);
 	num_proc_basic_group = 1 << total_round;
 
 	if (ctx->conf.my_proc >= num_proc_basic_group)

@@ -69,6 +69,7 @@ struct cc_conf {
 	int                     qp_tx_depth;
         int                     qp_rx_depth;
         int                     use_mq;
+        int                     oob_barrier;
 	int                     size;
 	struct cc_alg_info     *algorithm;
 };
@@ -592,7 +593,9 @@ static int __init_ctx( struct cc_context *ctx )
 
 #include "cc_latency_test.h"
 #include "cc_barrier.h"
-
+#include "cc_rk_barrier.h"
+#include "cc_ff_barrier.h"
+#include "cc_fanin.h"
 static void __usage(const char *argv)
 {
 	if (__my_proc == 0) {
@@ -636,10 +639,20 @@ static struct cc_alg_info     * get_test_algorithm(char *name)
 		return &__barrier_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
 	}
 
-        if (strstr(__rk_fanin_info.short_name, name) != NULL) {
-                log_info("Chose barrier based on recursive doubling \n");
-                return &__rk_fanin_info;  // reference it otherwise we get 'defined but not used' error in compilation
+        if (strstr(__rk_barrier_info.short_name, name) != NULL) {
+                log_info("Chose barrier based on recursive King \n");
+                return &__rk_barrier_info;  // reference it otherwise we get 'defined but not used' error in compilation
 	}
+
+        if (strstr(__ff_barrier_info.short_name, name) != NULL) {
+                log_info("Chose barrier based on Knomial Fanin/Fanout \n");
+                return &__ff_barrier_info;  // reference it otherwise we get 'defined but not used' error in compilation
+	}
+
+        if (strstr(__knomial_fanin_info.short_name, name) != NULL) {
+                log_info("Chose fanin based on knomial tree \n");
+                return &__knomial_fanin_info;  // reference it otherwise we get 'defined but not used' error in compilation
+        }
 
         if (strstr(__latency_test_info.short_name, name) != NULL) {
                 log_info("Chose latency test\n");
@@ -764,6 +777,7 @@ int main(int argc, char *argv[])
         char *env = NULL;
         int use_mq = 1;
         int ib_port = 1;
+        int oob_barrier = 0;
 #if defined(USE_MPI)
 	MPI_Init(&argc, &argv);
 	log_trace("MPI is enabled\n");
@@ -783,6 +797,11 @@ int main(int argc, char *argv[])
             ib_port = atoi(env);
         }
 
+        env = getenv("CC_OOB_BARRIER");
+        if (env) {
+            oob_barrier = atoi(env);
+        }
+        ctx->conf.oob_barrier = oob_barrier;
 	log_trace("my_proc: %d\n", ctx->conf.my_proc);
 	log_trace("num_proc: %d\n", ctx->conf.num_proc);
 
@@ -874,7 +893,7 @@ int main(int argc, char *argv[])
 
 			log_trace("warmup ...\n");
                         while (!rc && iters--) {
-                            if (ctx->conf.algorithm == &__rk_fanin_info) {
+                            if (ctx->conf.oob_barrier) {
                                 MPI_Barrier(MPI_COMM_WORLD);
                             }
                             rc = ctx->conf.algorithm->proc(ctx);
@@ -892,9 +911,9 @@ int main(int argc, char *argv[])
 			log_trace("start target procedure ...\n");
 
                         while (!rc && iters--) {
-                            // if (ctx->conf.algorithm == &__rk_fanin_info) {
+                            if (ctx->conf.oob_barrier) {
                                 MPI_Barrier(MPI_COMM_WORLD);
-                            // }
+                            }
                             __timer(&start_time);
                             rc = ctx->conf.algorithm->proc(ctx);
                             __timer(&end_time);
