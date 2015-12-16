@@ -30,7 +30,7 @@ char *__int_arr_2_str(int *arr, int num) {
 #endif
 
 static inline
-int post_send_wr(struct cc_context *ctx, int peer_id) {
+int post_send_wr_no_sge(struct cc_context *ctx, int peer_id) {
     struct ibv_exp_send_wr  wr, *wr_bad;
     int rc = 0;
     memset(&wr,0,sizeof(wr));
@@ -39,6 +39,40 @@ int post_send_wr(struct cc_context *ctx, int peer_id) {
     wr.exp_opcode = IBV_EXP_WR_RDMA_WRITE_WITH_IMM;
     wr.sg_list = NULL;
     wr.num_sge = 0;
+    // fprintf(stderr,"rank %d: post send to %d\n",
+            // ctx->conf.my_proc, peer_id);
+    rc = ibv_exp_post_send(ctx->proc_array[peer_id].qp, &wr, &wr_bad);
+    if (rc)
+        log_fatal("can not post to QP[%d] : WR{wr_id=%lu, opcode=%u, send_flags=%lu}\n",
+                  1, wr_bad->wr_id, wr_bad->exp_opcode, wr_bad->exp_send_flags);
+    return 0;
+}
+
+static inline
+int post_send_wr(struct cc_context *ctx, int peer_id,
+                 struct ibv_sge *sg_list, int num_sge,
+                 uintptr_t remote_addr, uint32_t rkey,
+                 int calc,
+                 enum ibv_exp_calc_op op,  int signaled) {
+    struct ibv_exp_send_wr  wr, *wr_bad;
+    int rc = 0;
+    memset(&wr,0,sizeof(wr));
+    wr.wr_id = 0;
+    wr.next = NULL;
+    wr.exp_opcode = IBV_EXP_WR_RDMA_WRITE_WITH_IMM;
+    wr.sg_list = sg_list;
+    wr.num_sge = num_sge;
+    // wr.exp_send_flags = IBV_EXP_SEND_INLINE;
+    if (signaled)
+        wr.exp_send_flags |= IBV_EXP_SEND_SIGNALED;
+    wr.wr.rdma.remote_addr  = remote_addr;
+    wr.wr.rdma.rkey = rkey;
+    wr.op.calc.calc_op = op;
+    if (calc) {
+        wr.exp_send_flags |= IBV_EXP_SEND_WITH_CALC;
+        wr.op.calc.data_type = IBV_EXP_CALC_DATA_TYPE_FLOAT;
+        wr.op.calc.data_size = IBV_EXP_CALC_DATA_SIZE_64_BIT;
+    }
     // fprintf(stderr,"rank %d: post send to %d\n",
             // ctx->conf.my_proc, peer_id);
     rc = ibv_exp_post_send(ctx->proc_array[peer_id].qp, &wr, &wr_bad);

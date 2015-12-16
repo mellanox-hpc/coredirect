@@ -55,7 +55,7 @@ static int __ff_barrier_alg(void *context)
     }
 
     if (__ff_barrier.fanin_root != -1) {
-        post_send_wr(ctx, __ff_barrier.fanin_root);
+        post_send_wr_no_sge(ctx, __ff_barrier.fanin_root);
         post_enable_wr(ctx, __ff_barrier.fanin_root, ctx->mqp);
         post_wait_wr(ctx, __ff_barrier.fanin_root,
                      ctx->mqp,1,1);
@@ -63,7 +63,7 @@ static int __ff_barrier_alg(void *context)
 
     for (i=0; i<__ff_barrier.fanin_children_count; i++) {
         int peer = __ff_barrier.fanin_children[__ff_barrier.fanin_children_count-1-i];
-        post_send_wr(ctx, peer);
+        post_send_wr_no_sge(ctx, peer);
         post_enable_wr(ctx, peer, ctx->mqp);
     }
 
@@ -101,14 +101,14 @@ static int __ff_barrier_alg_no_mq(void *context)
                              j == 0 ? 1 : 0,
                              (j==0 && i == __ff_barrier.fanin_children_count-1) ? 1 : 0);
             }
-            post_send_wr(ctx, peer);
+            post_send_wr_no_sge(ctx, peer);
         }
     } else {
         for (i=0; i<__ff_barrier.fanin_children_count; i++) {
             post_wait_wr(ctx, __ff_barrier.fanin_children[i],
                          ctx->proc_array[my_root].qp,1,0);
         }
-        post_send_wr(ctx, my_root);
+        post_send_wr_no_sge(ctx, my_root);
 
         if (__ff_barrier.fanin_children_count) {
             int first_peer = __ff_barrier.fanin_children[__ff_barrier.fanin_children_count-1];
@@ -119,7 +119,7 @@ static int __ff_barrier_alg_no_mq(void *context)
                              ctx->proc_array[peer].qp,
                              i == 0 ? 1 : 0,
                              i == 0 ? 1 : 0);
-                post_send_wr(ctx, peer);
+                post_send_wr_no_sge(ctx, peer);
             }
         } else {
             poll_cq = ctx->proc_array[my_root].rcq;

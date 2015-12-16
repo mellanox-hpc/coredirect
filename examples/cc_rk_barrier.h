@@ -53,7 +53,7 @@ static int __rk_barrier_alg( void *context)
     int r = __rk_barrier.radix;
 
     if (__rk_barrier.type == NODE_EXTRA) {
-        post_send_wr(ctx, __rk_barrier.my_proxy);
+        post_send_wr_no_sge(ctx, __rk_barrier.my_proxy);
         post_enable_wr(ctx, __rk_barrier.my_proxy, ctx->mqp);
         post_wait_wr(ctx, __rk_barrier.my_proxy, ctx->mqp, 1, 1);
         DBG(KCYN, "extra send to proxy %d and wait", __rk_barrier.my_proxy);
@@ -72,7 +72,7 @@ static int __rk_barrier_alg( void *context)
             int round_peer_count = peer_count;
             for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
                 peer_id = __rk_barrier.base_peers[round_peer_count++];
-                post_send_wr(ctx, peer_id);
+                post_send_wr_no_sge(ctx, peer_id);
                 post_enable_wr(ctx, peer_id, ctx->mqp);
 
             }
@@ -92,7 +92,7 @@ static int __rk_barrier_alg( void *context)
     }
 
     if (__rk_barrier.type == NODE_PROXY) {
-        post_send_wr(ctx, __rk_barrier.my_extra);
+        post_send_wr_no_sge(ctx, __rk_barrier.my_extra);
         post_enable_wr(ctx, __rk_barrier.my_extra, ctx->mqp);
         DBG(KCYN, "proxy send to extra %d", __rk_barrier.my_extra);
     }
@@ -121,7 +121,7 @@ static int __rk_barrier_no_mq( void *context)
     struct ibv_cq *poll_cq = NULL;
 
     if (__rk_barrier.type == NODE_EXTRA) {
-        post_send_wr(ctx, __rk_barrier.my_proxy);
+        post_send_wr_no_sge(ctx, __rk_barrier.my_proxy);
         post_wait_wr(ctx, __rk_barrier.my_proxy, ctx->proc_array[my_id].qp, 1, 1);
         DBG(KCYN, "extra send to proxy %d and wait", __rk_barrier.my_proxy);
     }
@@ -164,7 +164,7 @@ static int __rk_barrier_no_mq( void *context)
             round_peer_count = peer_count;
             for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
                 peer_id = __rk_barrier.base_peers[round_peer_count++];
-                post_send_wr(ctx, peer_id);
+                post_send_wr_no_sge(ctx, peer_id);
                 DBG(KBLU, "round %d: i %d: peer_id %d",
                         round, i, peer_id);
             }
@@ -185,7 +185,7 @@ static int __rk_barrier_no_mq( void *context)
                          i == (__rk_barrier.num_peers - 1));
         }
         poll_cq  = ctx->proc_array[__rk_barrier.my_extra].scq;
-        post_send_wr(ctx, __rk_barrier.my_extra);
+        post_send_wr_no_sge(ctx, __rk_barrier.my_extra);
         DBG(KCYN, "proxy send to extra %d", __rk_barrier.my_extra);
     } else if (__rk_barrier.type == NODE_BASE) {
         int i;

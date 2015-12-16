@@ -37,7 +37,7 @@ static int __knomial_fanin(void *context)
     }
 
     if (__ff_barrier.fanin_root != -1) {
-        post_send_wr(ctx, __ff_barrier.fanin_root);
+        post_send_wr_no_sge(ctx, __ff_barrier.fanin_root);
         post_enable_wr(ctx, __ff_barrier.fanin_root, ctx->mqp);
     }else {
         int poll = 0;
