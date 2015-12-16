@@ -218,32 +218,64 @@ static int __rk_barrier_no_mq( void *context)
     return rc;
 }
 
+typedef struct __double_t {
+    union {
+        double dv;
+        uint64_t uv;
+    };
+} __double_t;
 
 static int __rk_pingpong(void *context) {
     struct cc_context *ctx = context;
     int rank = ctx->conf.my_proc;
+    int size = ctx->conf.num_proc;
+    int peer = (rank + 1) % size;
+    char buf[1024], *rbuf, *lbuf;
+    uint32_t rkey;
+    MPI_Status st;
+    lbuf = &buf[0];
+    struct ibv_mr *mr = ibv_reg_mr(ctx->pd, lbuf, 1024,
+                                   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+    MPI_Sendrecv(&lbuf,sizeof(lbuf),MPI_BYTE, peer, 111,
+                 &rbuf,sizeof(rbuf),MPI_BYTE, peer, 111,
+                 MPI_COMM_WORLD, &st);
+
+    MPI_Sendrecv(&mr->rkey,sizeof(uint32_t),MPI_BYTE, peer, 111,
+                 &rkey,sizeof(uint32_t),MPI_BYTE, peer, 111,
+                 MPI_COMM_WORLD, &st);
+    fprintf(stderr,"rank %d, my_buf %p, my_rkey %d, rbuf %p, rkey %d\n",
+            rank, (void*)lbuf, mr->rkey,
+            rbuf, rkey);
+
+
     MPI_Barrier(MPI_COMM_WORLD);
     struct ibv_cq *cq;
     if (rank == 0){
 
-        char *buf = (char*)ctx->buf;
-        double *v1 = (double*)buf;
-        double *v2 = (double*)(buf+16);
-        *v1 = 3.1415;
-        *v2 = 2.7182;
-        fprintf(stderr,"rank 0, v1 = %g, v2 = %g\n",
-                *v1, *v2);
-        
+        // char *buf = (char*)ctx->buf;
+        uint64_t *v1 = (uint64_t*)lbuf;
+        uint64_t *v2 = (uint64_t*)(lbuf+16);
+        uint64_t *v3 = (uint64_t*)(lbuf+32);
+
+        __double_t o1, o2, o3;
+        o1.dv = 3.1415;
+        o2.dv = 2.7182;
+        o3.dv = 1000.0;
+
+        *v1 = htonll(o1.uv);
+        *v2 = htonll(o2.uv);
+        *v3 = htonll(o3.uv);
+        fprintf(stderr,"rank 0, v1 = %d, v2 = %d, v3 = %d\n",
+                (int)ntohll(*v1), (int)ntohll(*v2),(int)ntohll(*v3));
         struct ibv_sge sge[2];
         sge[0].addr = (uintptr_t)v1;
-        sge[0].length = 16;
-        sge[0].lkey = ctx->mr->lkey;
-        sge[1].addr = (uintptr_t)v2;
-        sge[1].length = 16;
-        sge[1].lkey = ctx->mr->lkey;
-        post_send_wr(ctx, 1, &sge[0],2,
-                     ctx->proc_array[1].info.vaddr,
-                     ctx->proc_array[1].info.rkey,
+        sge[0].length = 48;
+        sge[0].lkey = mr->lkey;
+        // sge[1].addr = (uintptr_t)v2;
+        // sge[1].length = 16;
+        // sge[1].lkey = mr->lkey;
+        post_send_wr(ctx, 1, &sge[0],1,
+                     (uintptr_t)rbuf,rkey,
                      1, IBV_EXP_CALC_OP_ADD, 1);
         post_enable_wr(ctx, 1, ctx->mqp);
         cq = ctx->proc_array[1].scq;
@@ -264,9 +296,12 @@ static int __rk_pingpong(void *context) {
     }
 
     if (rank == 1) {
-        double *v = (double*)ctx->buf;
-        fprintf(stderr," rank 1, rst %g\n", *v);
+        uint64_t *v = (uint64_t*)lbuf;
+        __double_t rst;
+        rst.uv = ntohll(*v);
+        fprintf(stderr," rank 1, rst %g\n", rst.dv);
     }
+
     return 0;
 }
 

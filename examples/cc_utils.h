@@ -65,11 +65,13 @@ int post_send_wr(struct cc_context *ctx, int peer_id,
     // wr.exp_send_flags = IBV_EXP_SEND_INLINE;
     if (signaled)
         wr.exp_send_flags |= IBV_EXP_SEND_SIGNALED;
+
     wr.wr.rdma.remote_addr  = remote_addr;
     wr.wr.rdma.rkey = rkey;
-    wr.op.calc.calc_op = op;
+
     if (calc) {
         wr.exp_send_flags |= IBV_EXP_SEND_WITH_CALC;
+        wr.op.calc.calc_op = op;
         wr.op.calc.data_type = IBV_EXP_CALC_DATA_TYPE_FLOAT;
         wr.op.calc.data_size = IBV_EXP_CALC_DATA_SIZE_64_BIT;
     }

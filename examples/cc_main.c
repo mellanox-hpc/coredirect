@@ -444,7 +444,7 @@ static int __init_ctx( struct cc_context *ctx )
 			init_attr.cap.max_recv_wr  = ctx->conf.qp_rx_depth;
 			init_attr.cap.max_send_sge = 16;
 			init_attr.cap.max_recv_sge = 16;
-                        init_attr.cap.max_inline_data = 0;
+                        init_attr.cap.max_inline_data = 128;
 			init_attr.qp_type = IBV_QPT_RC;
                         init_attr.sq_sig_all = 0;
 			init_attr.pd = ctx->pd;
@@ -528,8 +528,8 @@ static int __init_ctx( struct cc_context *ctx )
 
 			attr.qp_state        = IBV_QPS_INIT;
 			attr.pkey_index      = 0;
-			attr.port_num        = ctx->ib_port;
-                        attr.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+                        attr.port_num        = ctx->ib_port;
+                        attr.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_LOCAL_WRITE;
 
 			rc = ibv_modify_qp(ctx->proc_array[i].qp, &attr,
 					IBV_QP_STATE              |
