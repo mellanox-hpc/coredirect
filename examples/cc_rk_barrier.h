@@ -219,6 +219,82 @@ static int __rk_barrier_no_mq( void *context)
 }
 
 
+static int __rk_pingpong(void *context) {
+    struct cc_context *ctx = context;
+    int rank = ctx->conf.my_proc;
+    MPI_Barrier(MPI_COMM_WORLD);
+    struct ibv_cq *cq;
+    if (rank == 0){
+
+        char *buf = (char*)ctx->buf;
+        double *v1 = (double*)buf;
+        double *v2 = (double*)(buf+16);
+        *v1 = 3.1415;
+        *v2 = 2.7182;
+        fprintf(stderr,"rank 0, v1 = %g, v2 = %g\n",
+                *v1, *v2);
+        
+        struct ibv_sge sge[2];
+        sge[0].addr = (uintptr_t)v1;
+        sge[0].length = 16;
+        sge[0].lkey = ctx->mr->lkey;
+        sge[1].addr = (uintptr_t)v2;
+        sge[1].length = 16;
+        sge[1].lkey = ctx->mr->lkey;
+        post_send_wr(ctx, 1, &sge[0],2,
+                     ctx->proc_array[1].info.vaddr,
+                     ctx->proc_array[1].info.rkey,
+                     1, IBV_EXP_CALC_OP_ADD, 1);
+        post_enable_wr(ctx, 1, ctx->mqp);
+        cq = ctx->proc_array[1].scq;
+    } else {
+        cq = ctx->proc_array[0].rcq;
+    }
+
+
+
+    int poll = 0;
+    struct ibv_wc wc;
+    while (poll == 0) {
+        poll = ibv_poll_cq(cq,
+                           1, &wc);
+    }
+    if (poll < 0 || wc.status != IBV_WC_SUCCESS) {
+        fprintf(stderr,"rank %d, Got error wc: %s\n",rank, ibv_wc_status_str(wc.status));
+    }
+
+    if (rank == 1) {
+        double *v = (double*)ctx->buf;
+        fprintf(stderr," rank 1, rst %g\n", *v);
+    }
+    return 0;
+}
+
+static int __rk_pingpong_no_mq(void *context) {
+    struct cc_context *ctx = context;
+    int size = ctx->conf.num_proc;
+    int rank = ctx->conf.my_proc;
+    int peer = (rank+1) % size;
+    post_send_wr_no_sge(ctx, peer);
+    // post_wait_wr(ctx, peer, ctx->proc_array[peer].qp,1,1);
+    ctx->proc_array[peer].credits--;
+    if (ctx->proc_array[peer].credits <= 10) {
+        if (__repost(ctx, ctx->proc_array[peer].qp, ctx->conf.qp_rx_depth, peer) != ctx->conf.qp_rx_depth)
+            log_fatal("__post_read failed\n");
+    }
+
+    int poll = 0;
+    struct ibv_wc wc;
+    while (poll == 0) {
+        poll = ibv_poll_cq(ctx->proc_array[peer].rcq,
+                           1, &wc);
+    }
+    if (poll < 0 || wc.status != IBV_WC_SUCCESS) {
+        fprintf(stderr,"Got error wc: %s\n",ibv_wc_status_str(wc.status));
+    }
+    return 0;
+}
+
 static int __rk_barrier_setup( void *context )
 {
     int rc = 0;
@@ -234,6 +310,14 @@ static int __rk_barrier_setup( void *context )
     if (!ctx->conf.use_mq) {
         __rk_barrier_info.proc = __rk_barrier_no_mq;
         __rk_barrier_info.check = __rk_barrier_check_no_mq;
+    }
+
+    var = getenv("CC_PP");
+    if (var) {
+        __rk_barrier_info.proc = __rk_pingpong;
+        if (!ctx->conf.use_mq) {
+            __rk_barrier_info.proc = __rk_pingpong_no_mq;
+        }
     }
     __rk_barrier.steps = 0;
     __rk_barrier.base_num = 1;
