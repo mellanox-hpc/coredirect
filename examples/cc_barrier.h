@@ -2,6 +2,12 @@
  * Copyright (c) 2013 Mellanox Technologies.  All rights reserved.
  */
 
+#define CALLOC_CHECK(_dst, _num, _type) do{                             \
+        _dst = (_type *)calloc(_num, sizeof(_type));                    \
+        if (!_dst) {                                                    \
+            log_fatal("Calloc for %lu bytes failed\n",_num*sizeof(_type)); \
+        }                                                               \
+    }while(0)
 
 static struct {
 	struct ibv_exp_send_wr *wr;
@@ -15,7 +21,7 @@ static struct {
 
 static int __algorithm_recursive_doubling_proc( void *context )
 {
-	int rc = 0;
+        int rc = 0;
 	struct cc_context *ctx = context;
 	int cur_round = 0;
 	int my_id = ctx->conf.my_proc;
@@ -24,9 +30,7 @@ static int __algorithm_recursive_doubling_proc( void *context )
 	struct ibv_exp_send_wr wr;
 	struct ibv_exp_send_wr *wr_bad;
 
-	timestamp_t t0 = get_tsc();
-
-	__alg_obj.cur_iteration++;
+        __alg_obj.cur_iteration++;
 
 	memset(__alg_obj.wr, 0, 3 * __alg_obj.total_round * sizeof(*__alg_obj.wr));
 	memset(__alg_obj.wc, 0, __alg_obj.total_round * sizeof(*__alg_obj.wc));
@@ -50,9 +54,11 @@ static int __algorithm_recursive_doubling_proc( void *context )
 			log_fatal("can not post to MQP : WR{wr_id=%ld, opcode=%d, send_flags=%ld}\n",
 					wr_bad->wr_id, wr_bad->exp_opcode, wr_bad->exp_send_flags);
 
-		if (__alg_obj.cur_iteration >= (ctx->conf.qp_rx_depth - 10))
-			if (__post_read(ctx, ctx->proc_array[peer_id].qp, ctx->conf.qp_rx_depth) != ctx->conf.qp_rx_depth)
-				log_fatal("__post_read failed\n");
+                ctx->proc_array[peer_id].credits--;
+                if (ctx->proc_array[peer_id].credits <= 10) {
+                    if (__repost(ctx, ctx->proc_array[peer_id].qp, ctx->conf.qp_rx_depth, peer_id) != ctx->conf.qp_rx_depth)
+                        log_fatal("__post_read failed\n");
+                }
 	}
 
 	/* Pairwise exchange inside basic group (and single single step for nodes from extra group) */
@@ -101,9 +107,11 @@ static int __algorithm_recursive_doubling_proc( void *context )
 			log_fatal("can not post to MQP : WR{wr_id=%lu, opcode=%d, send_flags=%ld}\n",
 					wr_bad->wr_id, wr_bad->exp_opcode, wr_bad->exp_send_flags);
 
-		if (__alg_obj.cur_iteration >= (ctx->conf.qp_rx_depth - 10))
-			if (__post_read(ctx, ctx->proc_array[peer_id].qp, ctx->conf.qp_rx_depth) != ctx->conf.qp_rx_depth)
-				log_fatal("__post_read failed\n");
+                ctx->proc_array[peer_id].credits--;
+                if (ctx->proc_array[peer_id].credits <= 10) {
+                    if (__repost(ctx, ctx->proc_array[peer_id].qp, ctx->conf.qp_rx_depth, peer_id) != ctx->conf.qp_rx_depth)
+                        log_fatal("__post_read failed\n");
+                }
 	}
 
 	/* Notify a peer from extra group */
@@ -161,43 +169,52 @@ static int __algorithm_recursive_doubling_proc( void *context )
 				log_fatal("timeout exceeded\n");
 		} while (ne < __alg_obj.total_round);
 	}
-
-	if (my_id == 0) {
-		printf("Barrier took: %6.6f usec \n",  ts_to_usec(get_tsc()-t0));
-	}
-
-	return rc;
+        return rc;
 }
 
 static int __algorithm_recursive_doubling_check( void *context )
 {
-	int rc = 0;
-	struct cc_context *ctx = context;
-	time_t start;
-	time_t finish;
-	time_t wait;
-	time_t expect_value = 0;
-	int num_proc = 0;
-	int my_proc = 0;
-	const int wait_period = 5;
+    int rc = 0;
+    struct cc_context *ctx = context;
+    int num_proc = ctx->conf.num_proc;
+    int my_proc = ctx->conf.my_proc;
+    int i;
+    int *check_array = NULL;
+    MPI_Status st;
+    if (0 == my_proc) {
+        CALLOC_CHECK(check_array,num_proc,int);
+    }
 
-	num_proc = ctx->conf.num_proc;
-	my_proc = ctx->conf.my_proc;
+    for (i=0; i<num_proc; i++) {
+        if (my_proc == 0 && i > 0) {
+            MPI_Recv(&check_array[i],1,MPI_INT,MPI_ANY_SOURCE,123,MPI_COMM_WORLD,&st);
+        }
+        if (my_proc == i) {
+            fprintf(stderr,"barrier check, rank %d\n",my_proc);
+            usleep(1000);
+            if (i > 0) {
+                MPI_Send(&my_proc,1,MPI_INT,0,123,MPI_COMM_WORLD);
+            }
+        }
+        __algorithm_recursive_doubling_proc(context);
+    }
 
-	wait = my_proc * wait_period;
-	expect_value = ( (num_proc - my_proc - 1) > 0 ? (num_proc - my_proc - 1) * wait_period - 2 : 0 );
-
-	__sleep(wait);
-	start = time(NULL);
-	__algorithm_recursive_doubling_proc(context);
-	finish = time(NULL);
-
-	rc = (((finish - start) >= expect_value) ? 0 : -1);
-
-	log_trace("my_proc = %d wait = %ld limit = %ld actual wait = %ld\n",
-                       my_proc, (unsigned long)wait, (unsigned long)expect_value, (unsigned long)(finish - start));
-
-	return rc;
+    if (0 == my_proc) {
+        for (i=0; i<num_proc; i++) {
+            if (check_array[i] != i) {
+                rc = -1; break;
+            }
+        }
+        if (rc == -1) {
+            fprintf(stderr,"check=[");
+            for (i=0; i<num_proc-1; i++)
+                fprintf(stderr,"%d ",check_array[i]);
+            fprintf(stderr,"%d]\n",check_array[num_proc-1]);
+        }
+        free(check_array);
+    }
+    MPI_Allreduce(MPI_IN_PLACE,&rc,1,MPI_INT,MPI_MIN,MPI_COMM_WORLD);
+    return rc;
 }
 
 static int __algorithm_recursive_doubling_setup( void *context )
@@ -253,11 +270,11 @@ static int __algorithm_recursive_doubling_close( void *context )
 }
 
 static struct cc_alg_info __barrier_algorithm_recursive_doubling_info = {
-		"Barrier: recursive doubling",
-		"barrier",
-		"This algorithm uses Managed QP, IBV_WR_CQE_WAIT, IBV_WR_SEND_ENABLE",
-		&__algorithm_recursive_doubling_setup,
-		&__algorithm_recursive_doubling_close,
-		&__algorithm_recursive_doubling_proc,
-		&__algorithm_recursive_doubling_check
+    "Barrier: recursive doubling",
+    "barrier",
+    "This algorithm uses Managed QP, IBV_WR_CQE_WAIT, IBV_WR_SEND_ENABLE",
+    &__algorithm_recursive_doubling_setup,
+    &__algorithm_recursive_doubling_close,
+    &__algorithm_recursive_doubling_proc,
+    &__algorithm_recursive_doubling_check
 };
