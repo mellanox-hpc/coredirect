@@ -146,5 +146,11 @@ enum {
     NODE_PROXY
 };
 
+typedef struct __double_t {
+    union {
+        double dv;
+        uint64_t uv;
+    };
+} __double_t;
 
 #endif

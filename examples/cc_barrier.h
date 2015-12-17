@@ -196,7 +196,7 @@ static int __algorithm_recursive_doubling_setup( void *context )
 
 	/* calculate total number of procs in basic group and number of rounds
          */
-        total_round = __log2(ctx->conf.num_proc);
+        total_round = __log2_cc(ctx->conf.num_proc);
 	num_proc_basic_group = 1 << total_round;
 
 	if (ctx->conf.my_proc >= num_proc_basic_group)

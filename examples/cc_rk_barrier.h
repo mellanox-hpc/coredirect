@@ -218,12 +218,6 @@ static int __rk_barrier_no_mq( void *context)
     return rc;
 }
 
-typedef struct __double_t {
-    union {
-        double dv;
-        uint64_t uv;
-    };
-} __double_t;
 
 static int __rk_pingpong(void *context) {
     struct cc_context *ctx = context;
@@ -337,6 +331,7 @@ static int __rk_barrier_setup( void *context )
     struct cc_context *ctx = context;
     var = getenv("CC_RADIX");
     if (var) {
+
         __rk_barrier.radix = atoi(var);
     } else {
         __rk_barrier.radix = 2;

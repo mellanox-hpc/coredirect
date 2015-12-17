@@ -175,7 +175,7 @@ static inline void __timer(struct cc_timer *t)
 			(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec);
 }
 
-static inline int __log2(long val)
+static inline int __log2_cc(long val)
 {
 	int count = 0;
 
@@ -594,6 +594,7 @@ static int __init_ctx( struct cc_context *ctx )
 #include "cc_latency_test.h"
 #include "cc_barrier.h"
 #include "cc_rk_barrier.h"
+#include "cc_rk_allreduce.h"
 #include "cc_ff_barrier.h"
 #include "cc_fanin.h"
 static void __usage(const char *argv)
@@ -642,6 +643,11 @@ static struct cc_alg_info     * get_test_algorithm(char *name)
         if (strstr(__rk_barrier_info.short_name, name) != NULL) {
                 log_info("Chose barrier based on recursive King \n");
                 return &__rk_barrier_info;  // reference it otherwise we get 'defined but not used' error in compilation
+	}
+
+        if (strstr(__rk_allreduce_info.short_name, name) != NULL) {
+                log_info("Chose allreduce based on recursive King \n");
+                return &__rk_allreduce_info;  // reference it otherwise we get 'defined but not used' error in compilation
 	}
 
         if (strstr(__ff_barrier_info.short_name, name) != NULL) {
