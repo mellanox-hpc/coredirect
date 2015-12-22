@@ -270,7 +270,7 @@ static int __rk_pingpong(void *context) {
         // sge[1].lkey = mr->lkey;
         post_send_wr(ctx, 1, &sge[0],1,
                      (uintptr_t)rbuf,rkey,
-                     1, IBV_EXP_CALC_OP_ADD, 1);
+                     1, IBV_EXP_CALC_OP_ADD, 1, 0);
         post_enable_wr(ctx, 1, ctx->mqp);
         cq = ctx->proc_array[1].scq;
     } else {

@@ -53,7 +53,7 @@ int post_send_wr(struct cc_context *ctx, int peer_id,
                  struct ibv_sge *sg_list, int num_sge,
                  uintptr_t remote_addr, uint32_t rkey,
                  int calc,
-                 enum ibv_exp_calc_op op,  int signaled) {
+                 enum ibv_exp_calc_op op,  int signaled, int inlined) {
     struct ibv_exp_send_wr  wr, *wr_bad;
     int rc = 0;
     memset(&wr,0,sizeof(wr));
@@ -62,7 +62,8 @@ int post_send_wr(struct cc_context *ctx, int peer_id,
     wr.exp_opcode = IBV_EXP_WR_RDMA_WRITE_WITH_IMM;
     wr.sg_list = sg_list;
     wr.num_sge = num_sge;
-    // wr.exp_send_flags = IBV_EXP_SEND_INLINE;
+    if (inlined)
+        wr.exp_send_flags = IBV_EXP_SEND_INLINE;
     if (signaled)
         wr.exp_send_flags |= IBV_EXP_SEND_SIGNALED;
 

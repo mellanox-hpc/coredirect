@@ -46,9 +46,6 @@ static int __rk_allreduce_check(void *context) {
             break;
         }
     }
-    if (ctx->conf.my_proc == 0) {
-        DBG(KMAG, "local: %g, exp: %g\n",v1,v2);
-    }
     return global_rst;
 }
 
@@ -86,37 +83,33 @@ static int __rk_allreduce_alg_v( void *context, double *value)
     sge.lkey = __rk_allreduce.mr->lkey;
     *my_buf = net_value;
 
+    char *my_reduce_addr = (char*)my_buf;
     if (__rk_allreduce.type == NODE_EXTRA) {
         uintptr_t dest_addr = __rk_allreduce.addrs[__rk_allreduce.my_proxy];
         sge.addr   = (uintptr_t)((char*)my_buf);
         sge.length = 8;
         post_send_wr(ctx, __rk_allreduce.my_proxy, &sge,1,dest_addr,
                      __rk_allreduce.rkeys[__rk_allreduce.my_proxy], 0,
-                     IBV_EXP_CALC_OP_ADD,0);
+                     IBV_EXP_CALC_OP_ADD,0,1);
         post_enable_wr(ctx, __rk_allreduce.my_proxy, ctx->mqp);
         post_wait_wr(ctx, __rk_allreduce.my_proxy, ctx->mqp, 1, 1);
         DBG(KCYN, "extra send to proxy %d and wait", __rk_allreduce.my_proxy);
     }
 
+    sge.addr = (uintptr_t)my_buf;
+    sge.length = 8;
     if (__rk_allreduce.type == NODE_PROXY) {
         DBG(KCYN, "proxy wait for extra %d", __rk_allreduce.my_proxy);
         post_wait_wr(ctx, __rk_allreduce.my_extra, ctx->mqp,1, 0);
         sge.addr = (uintptr_t)extra_buf;
-        uintptr_t dest_addr =  (uintptr_t)my_buf;
         sge.length = 2*16;
-        DBG(KBLU,"rank %d, REDUCE SELF with EXTRA, sge.addr pos %d, len %d, dest post %d\n",
-            my_id, (int)((char*)sge.addr-(char*)my_buf)/16, sge.length,
-            (int)((char*)dest_addr - (char*)my_buf)/16);
-        post_send_wr(ctx, my_id,&sge,1,dest_addr,
-                     __rk_allreduce.mr->rkey,1,IBV_EXP_CALC_OP_ADD,0);
-        post_enable_wr(ctx, my_id, ctx->mqp);
-        post_wait_wr(ctx, my_id, ctx->mqp, 1, 0);
     }
+
 
     if (__rk_allreduce.type == NODE_BASE || __rk_allreduce.type == NODE_PROXY) {
         int round;
         int peer_count = 0;
-        for (round=0; round < __rk_allreduce.steps; round++) {
+        for (round=0; round < __rk_allreduce.steps && peer_count < __rk_allreduce.num_peers; round++) {
             int i;
             int round_peer_count = peer_count;
             int my_pos = 0;
@@ -126,6 +119,8 @@ static int __rk_allreduce_alg_v( void *context, double *value)
                     my_pos++;
             }
             round_peer_count = peer_count;
+            int need_calc = (round > 0 || __rk_allreduce.type == NODE_PROXY);
+
             for (i=0; i<r-1 && round_peer_count < __rk_allreduce.num_peers; i++) {
 
                 peer_id = __rk_allreduce.base_peers[round_peer_count++];
@@ -134,18 +129,32 @@ static int __rk_allreduce_alg_v( void *context, double *value)
                     ((char*)__rk_allreduce.addrs[peer_id]
                      +round*r*16+
                      +16+16+cur_pos*16);
-                sge.addr   = (uintptr_t)((char*)my_buf+round*r*16);
-                sge.length = 8;
-                int need_calc = 0;
-                DBG(KBLU,"rank %d, send to %d, sge.addr pos %d, len %d, dest post %d, calc %d",
-                        my_id, peer_id, (int)((char*)sge.addr-(char*)my_buf)/16, sge.length,
+
+                DBG(KBLU,"rank %d, send to %d, sge.addr pos %d, len %d, dest pos %d, calc %d",
+                        my_id, peer_id, (int)((char*)sge.addr-(char*)extra_buf)/16, sge.length,
                         (int)((char*)dest_addr - (char*)__rk_allreduce.addrs[peer_id])/16, need_calc);
                 post_send_wr(ctx, peer_id, &sge,1,dest_addr,
                              __rk_allreduce.rkeys[peer_id], need_calc,
-                             IBV_EXP_CALC_OP_ADD,0);
+                             IBV_EXP_CALC_OP_ADD,0,
+                             need_calc == 0 ? 1 : 0
+                    );
                 post_enable_wr(ctx, peer_id, ctx->mqp);
-
             }
+            // SEND CALC SELF
+
+            // uintptr_t dest_addr = (uintptr_t)((char*)my_buf+(round+)*r*16);
+
+            my_reduce_addr += (round_peer_count - peer_count + 1)*16;
+            DBG(KBLU,"rank %d, REDUCE SELF, sge.addr pos %d, len %d, dest pos %d, calc %d",
+                my_id, (int)((char*)sge.addr-(char*)extra_buf)/16, sge.length,
+                (int)(my_reduce_addr - (char*)extra_buf)/16, need_calc);
+            post_send_wr(ctx, my_id,&sge,1,(uintptr_t)my_reduce_addr,
+                         __rk_allreduce.mr->rkey,need_calc,
+                         IBV_EXP_CALC_OP_ADD,0,0);
+            post_enable_wr(ctx, my_id, ctx->mqp);
+            post_wait_wr(ctx, my_id, ctx->mqp, 1, 0);
+                
+
 
             round_peer_count = peer_count;
             for (i=0; i<r-1 && round_peer_count < __rk_allreduce.num_peers; i++) {
@@ -155,33 +164,37 @@ static int __rk_allreduce_alg_v( void *context, double *value)
                         round, i, peer_id);
             }
 
-            sge.addr = (uintptr_t)((char*)my_buf+round*r*16);
-            uintptr_t dest_addr = (round == __rk_allreduce.steps - 1) ?
-                (uintptr_t)extra_buf : (uintptr_t)((char*)my_buf+(round+1)*r*16);
+            if (round == 0)
+                sge.addr = (uintptr_t)((char*)my_buf +16);
+            else
+                sge.addr = (uintptr_t)((char*)sge.addr + sge.length);
             sge.length = (round_peer_count - peer_count + 1)*16;
-            DBG(KBLU,"rank %d, REDUCE SELF, sge.addr pos %d, len %d, dest post %d",
-                    my_id, (int)((char*)sge.addr-(char*)my_buf)/16, sge.length,
-                    (int)((char*)dest_addr - (char*)my_buf)/16);
-            post_send_wr(ctx, my_id,&sge,1,dest_addr,
-                         __rk_allreduce.mr->rkey,1,IBV_EXP_CALC_OP_ADD,0);
-            post_enable_wr(ctx, my_id, ctx->mqp);
-            post_wait_wr(ctx, my_id, ctx->mqp, 1,
-                         round == __rk_allreduce.steps - 1? 1: 0);
+            // uintptr_t dest_addr = (round == __rk_allreduce.steps - 1) ?
+                // (uintptr_t)extra_buf : (uintptr_t)((char*)my_buf+(round+1)*r*16);
             peer_count = round_peer_count;
         }
+        uintptr_t dest_addr = (uintptr_t)extra_buf;
+        DBG(KBLU,"rank %d, REDUCE SELF, sge.addr pos %d, len %d, dest pos %d",
+            my_id, (int)((char*)sge.addr-(char*)extra_buf)/16, sge.length,
+            (int)((char*)dest_addr - (char*)extra_buf)/16);
+        post_send_wr(ctx, my_id,&sge,1,dest_addr,
+                     __rk_allreduce.mr->rkey,1,IBV_EXP_CALC_OP_ADD,0,0);
+        post_enable_wr(ctx, my_id, ctx->mqp);
+        post_wait_wr(ctx, my_id, ctx->mqp, 1, 1);
 
     }
 
     if (__rk_allreduce.type == NODE_PROXY) {
-        uintptr_t dest_addr = __rk_allreduce.addrs[__rk_allreduce.my_extra];
-        sge.addr   = (uintptr_t)((char*)extra_buf);
+        sge.addr = (uintptr_t)extra_buf;
         sge.length = 8;
+        uintptr_t dest_addr = __rk_allreduce.addrs[__rk_allreduce.my_extra];
         post_send_wr(ctx, __rk_allreduce.my_extra, &sge,1,dest_addr,
                      __rk_allreduce.rkeys[__rk_allreduce.my_extra], 0,
-                     IBV_EXP_CALC_OP_ADD,0);
+                     IBV_EXP_CALC_OP_ADD,0,1);
         post_enable_wr(ctx, __rk_allreduce.my_extra, ctx->mqp);
         DBG(KCYN, "proxy send to extra %d", __rk_allreduce.my_extra);
     }
+
 
     int poll = 0;
     struct ibv_wc wc;
@@ -202,8 +215,10 @@ static int __rk_allreduce_alg_v( void *context, double *value)
             uint64_t *b = (uint64_t*)__rk_allreduce.buf;
             fprintf(stderr,"rank %d buf: ", my_id);
             int j;
-            for (j=0; j<__rk_allreduce.steps*r*2+1; j++) {
-                __double_t tmp;
+            __double_t tmp;
+            tmp.uv = ntohll(b[0]);
+            fprintf(stderr,"%g ",tmp.dv);
+            for (j=2; j<__rk_allreduce.steps*r*2+1+2; j+=2) {
                 tmp.uv = ntohll(b[j]);
                 fprintf(stderr,"%g ",tmp.dv);
             }
@@ -243,7 +258,7 @@ static int __rk_allreduce_alg_v_no_loopback( void *context, double *value)
         sge.length = 8;
         post_send_wr(ctx, __rk_allreduce.my_proxy, &sge,1,dest_addr,
                      __rk_allreduce.rkeys[__rk_allreduce.my_proxy], 0,
-                     IBV_EXP_CALC_OP_ADD,0);
+                     IBV_EXP_CALC_OP_ADD,0,1);
         post_enable_wr(ctx, __rk_allreduce.my_proxy, ctx->mqp);
         post_wait_wr(ctx, __rk_allreduce.my_proxy, ctx->mqp, 1, 1);
         DBG(KCYN, "extra send to proxy %d and wait", __rk_allreduce.my_proxy);
@@ -289,7 +304,7 @@ static int __rk_allreduce_alg_v_no_loopback( void *context, double *value)
                         (int)((char*)dest_addr - (char*)__rk_allreduce.addrs[peer_id])/16, need_calc);
                 post_send_wr(ctx, peer_id, &sge,1,dest_addr,
                              __rk_allreduce.rkeys[peer_id], need_calc,
-                             IBV_EXP_CALC_OP_ADD,0);
+                             IBV_EXP_CALC_OP_ADD,0,need_calc==0?1:0);
                 post_enable_wr(ctx, peer_id, ctx->mqp);
 
             }
@@ -309,7 +324,7 @@ static int __rk_allreduce_alg_v_no_loopback( void *context, double *value)
     if (__rk_allreduce.type != NODE_EXTRA) {
         uintptr_t dest_addr = (uintptr_t)extra_buf;
         post_send_wr(ctx, my_id,&sge,1,dest_addr,
-                     __rk_allreduce.mr->rkey,1,IBV_EXP_CALC_OP_ADD,0);
+                     __rk_allreduce.mr->rkey,1,IBV_EXP_CALC_OP_ADD,0,0);
         post_enable_wr(ctx, my_id, ctx->mqp);
         post_wait_wr(ctx, my_id, ctx->mqp, 1, 1);
     }
@@ -320,7 +335,7 @@ static int __rk_allreduce_alg_v_no_loopback( void *context, double *value)
         sge.length = 8;
         post_send_wr(ctx, __rk_allreduce.my_extra, &sge,1,dest_addr,
                      __rk_allreduce.rkeys[__rk_allreduce.my_extra], 0,
-                     IBV_EXP_CALC_OP_ADD,0);
+                     IBV_EXP_CALC_OP_ADD,0,1);
         post_enable_wr(ctx, __rk_allreduce.my_extra, ctx->mqp);
         DBG(KCYN, "proxy send to extra %d", __rk_allreduce.my_extra);
     }
@@ -464,7 +479,7 @@ static int __rk_allreduce_setup( void *context )
     }
 #endif
 
-    size_t buf_len = 8*2*(r*__rk_allreduce.steps+1);
+    size_t buf_len = 8*2*(r*__rk_allreduce.steps+1+1);
     __rk_allreduce.buf = malloc(buf_len);
     __rk_allreduce.mr = ibv_reg_mr(ctx->pd, __rk_allreduce.buf, buf_len,
                                    IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
