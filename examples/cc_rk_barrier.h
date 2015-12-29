@@ -127,36 +127,36 @@ static int __rk_barrier_no_mq( void *context)
     }
 
     if (__rk_barrier.type == NODE_PROXY) {
-        // DBG(KCYN, "proxy wait for extra %d", __rk_barrier.my_proxy);
         int round_peer_count  = 0;
         int i;
         for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
             peer_id = __rk_barrier.base_peers[round_peer_count++];
             post_wait_wr(ctx, __rk_barrier.my_extra, ctx->proc_array[peer_id].qp,
-                         (i == 0) ? 1 : 0 , 0);
+                         (i == 0) ? 1 : 0 , 1);
+            DBG(KCYN, "wait [extra: wait_for_peer %d, peer_id %d, wait_count %d",
+                __rk_barrier.my_extra,  peer_id, 1);
+            
         }
     }
-
+    int peer_count = 0;
+    int round_peer_count = 0;
     if (__rk_barrier.type == NODE_BASE || __rk_barrier.type == NODE_PROXY) {
         int round;
-        int peer_count = 0;
         for (round=0; round < __rk_barrier.steps; round++) {
             int i;
-            int round_peer_count = peer_count;
-
+            peer_count = round_peer_count;
             if (round > 0) {
                 for (i=0; i<r-1 && round_peer_count < __rk_barrier.num_peers; i++) {
                     int j;
                     peer_id = __rk_barrier.base_peers[round_peer_count++];
-                    if (__rk_barrier.type == NODE_PROXY) {
-                        post_wait_wr(ctx, __rk_barrier.my_extra, ctx->proc_array[peer_id].qp, 0, 0);
-
-                    }
-                    for (j=0; j<round*(r-1); j++){
-                        int wait_count  = (j < (round-1)*(r-1)) || (i > 0) ? 0 : 1;
+                    for (j=(round-1)*(r-1); j<round*(r-1); j++){
+                        int first_round_wait_count =
+                            (__rk_barrier.type == NODE_PROXY && round == 1)? 2 : 1;
+                        int wait_count = (i > 0) ? 0 :
+                            (r-1)*(j<r-1 ? 0 : 1)+first_round_wait_count;
                         DBG(KBLU, "round %d: wait [%d]: wait_for_peer %d, peer_id %d, wait_count %d",
                             round, i,__rk_barrier.base_peers[j],  peer_id, wait_count);
-                        post_wait_wr(ctx, __rk_barrier.base_peers[j],ctx->proc_array[peer_id].qp, wait_count, 0);
+                        post_wait_wr(ctx, __rk_barrier.base_peers[j],ctx->proc_array[peer_id].qp, wait_count, 1);
                     }
                 }
             }
@@ -168,29 +168,37 @@ static int __rk_barrier_no_mq( void *context)
                 DBG(KBLU, "round %d: i %d: peer_id %d",
                         round, i, peer_id);
             }
-            peer_count = round_peer_count;
+            if (round_peer_count == __rk_barrier.num_peers)
+                break;
         }
 
     }
 
+    DBG(KCYN, "peer_count %d, round_peer_count %d, num_peers %d",
+        peer_count, round_peer_count, __rk_barrier.num_peers);
     if (__rk_barrier.type == NODE_PROXY) {
         int i;
-        post_wait_wr(ctx, __rk_barrier.my_extra,
-                     ctx->proc_array[__rk_barrier.my_extra].qp, 0, 0);
-        for (i=0; i<__rk_barrier.num_peers; i++) {
-            int wait_count = i <  (__rk_barrier.steps-1)*(r-1) ? 0 : 1;
+        for (i=peer_count; i<__rk_barrier.num_peers; i++) {
+            int wait_count = (i<r-1) ? 2 : r-1+1;
+            DBG(KBLU, "final: wait_for_peer %d posted to extra, wait_count %d, signalled %d",
+                __rk_barrier.base_peers[i], wait_count, i == (__rk_barrier.num_peers - 1));
             post_wait_wr(ctx, __rk_barrier.base_peers[i],
-                         ctx->proc_array[__rk_barrier.my_extra].qp,
+                         ctx->proc_array[my_id].qp,
                          wait_count,
                          i == (__rk_barrier.num_peers - 1));
+            post_wait_wr(ctx, __rk_barrier.base_peers[i],
+                         ctx->proc_array[__rk_barrier.my_extra].qp,
+                         0, 0);
+            
         }
-        poll_cq  = ctx->proc_array[__rk_barrier.my_extra].scq;
+        poll_cq  = ctx->proc_array[
+            my_id].scq;
         post_send_wr_no_sge(ctx, __rk_barrier.my_extra);
         DBG(KCYN, "proxy send to extra %d", __rk_barrier.my_extra);
     } else if (__rk_barrier.type == NODE_BASE) {
         int i;
-        for (i=0; i<__rk_barrier.num_peers; i++) {
-            int wait_count = i <  (__rk_barrier.steps-1)*(r-1) ? 0 : 1;
+        for (i=peer_count; i<__rk_barrier.num_peers; i++) {
+            int wait_count = (i<r-1) ? 1 : r-1+1;
             DBG(KBLU, "final: wait_for_peer %d posted to self, wait_count %d, signalled %d",
                 __rk_barrier.base_peers[i], wait_count, i == (__rk_barrier.num_peers - 1));
             
@@ -206,12 +214,16 @@ static int __rk_barrier_no_mq( void *context)
 
     int poll = 0;
     struct ibv_wc wc;
-    while (poll == 0) {
-        poll = ibv_poll_cq(poll_cq,
+    int poll_count = 1;
+    while (poll < poll_count) {
+        int ret = ibv_poll_cq(poll_cq,
                            1, &wc);
-    }
-    if (poll < 0 || wc.status != IBV_WC_SUCCESS) {
-        fprintf(stderr,"Got error wc: %s\n",ibv_wc_status_str(wc.status));
+
+        if (ret < 0 || (ret > 0 && wc.status != IBV_WC_SUCCESS)) {
+            fprintf(stderr,"Got error wc: %s\n",ibv_wc_status_str(wc.status));
+        }
+        
+        poll += ret;
     }
 
     DBG(KGRN, "barrier done");

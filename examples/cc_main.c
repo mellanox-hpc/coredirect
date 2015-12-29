@@ -414,9 +414,9 @@ static int __init_ctx( struct cc_context *ctx )
 			struct ibv_exp_cq_attr attr;
 			struct ibv_exp_qp_init_attr init_attr;
 
+                        ctx->proc_array[i].rcq = ibv_create_cq(ctx->ib_ctx, ctx->conf.cq_rx_depth, NULL, NULL, 0);
+                        ctx->proc_array[i].scq = ctx->proc_array[i].rcq;//ctx->proc_array[ctx->conf.my_proc].scq;
 
-			ctx->proc_array[i].scq = ctx->proc_array[ctx->conf.my_proc].scq;
-			ctx->proc_array[i].rcq = ibv_create_cq(ctx->ib_ctx, ctx->conf.cq_rx_depth, NULL, NULL, 0);
 			if (!ctx->proc_array[i].rcq) {
 				log_fatal("ibv_create_cq failed\n");
 			}
