@@ -223,6 +223,15 @@ exchange_qp_info_and_connect(int i, struct cc_context *ctx) {
         if (rc)
             log_fatal("ibv_modify_qp failed\n");
     }
+    {
+        int b1,b2;
+        MPI_Status status;
+        MPI_Sendrecv(&b1, 1, MPI_INT,
+                     i, 0,
+                     &b2, 1, MPI_INT,
+                     i, 0,
+                     MPI_COMM_WORLD, &status);
+    }
 }
 
 #define CHECK_CONN(_dest, _ctx) do{                     \
