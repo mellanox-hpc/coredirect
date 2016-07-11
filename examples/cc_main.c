@@ -18,10 +18,11 @@
 #include <time.h>
 #include <sys/resource.h>
 
-#include <infiniband/verbs.h>
 #include <infiniband/arch.h>
-#include <infiniband/umad.h>
+#include <infiniband/verbs.h>
+#include <infiniband/verbs_exp.h>
 
+#include <infiniband/umad.h>
 #include "config.h"
 
 /* MPI should be used for this version */
@@ -66,9 +67,13 @@ struct cc_conf {
 	int                     cq_tx_depth;
 	int                     cq_rx_depth;
 	int                     qp_tx_depth;
-	int                     qp_rx_depth;
+        int                     qp_rx_depth;
+        int                     use_mq;
+        int                     is_RoCE;
+        int                     oob_barrier;
 	int                     size;
-	struct cc_alg_info     *algorithm;
+        struct cc_alg_info     *algorithm;
+        int on_demand_conn;
 };
 
 #pragma pack( push, 1 )
@@ -87,7 +92,8 @@ struct cc_proc {
 	struct ibv_cq          *scq;
 	struct ibv_cq          *rcq;
         struct cc_proc_info     info;
-        int                     credits;
+        int                    wait_count;
+        int                    credits;
 };
 
 struct cc_context {
@@ -119,7 +125,8 @@ static int  __my_proc = 0;
 #define log_fatal(fmt, ...)  \
 	do {                                                           \
 		if (__my_proc == 0 && __debug_mask >= 0) {                 \
-			fprintf(stderr, "\033[0;3%sm" "[    FATAL ] #%d: " fmt "\033[m", "1", __my_proc, ##__VA_ARGS__);    \
+                        fprintf(stderr, "\033[0;3%sm" "[    FATAL ] #%d, %s:%d. errno %d: " fmt "\033[m", "1", __my_proc,\
+                                __FILE__,__LINE__,errno, ##__VA_ARGS__); \
 			exit(errno);    \
 		}    \
 	} while(0)
@@ -171,7 +178,10 @@ static inline void __timer(struct cc_timer *t)
 			(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec);
 }
 
-static inline int __log2(long val)
+
+
+
+static inline int __log2_cc(long val)
 {
 	int count = 0;
 
@@ -193,6 +203,7 @@ static uint16_t __get_local_lid(struct ibv_context *context, int port)
 	return attr.lid;
 }
 
+
 static int __post_read(struct cc_context *ctx, struct ibv_qp *qp, int count)
 {
 	int rc = 0;
@@ -200,12 +211,11 @@ static int __post_read(struct cc_context *ctx, struct ibv_qp *qp, int count)
 	struct ibv_recv_wr wr;
 	struct ibv_recv_wr *bad_wr;
 	int i = 0;
-
-	/* prepare the scatter/gather entry */
+        /* prepare the scatter/gather entry */
 	memset(&list, 0, sizeof(list));
 	list.addr = (uintptr_t)ctx->buf;
-	list.length = ctx->conf.size;
-	list.lkey = ctx->mr->lkey;
+        list.length = ctx->conf.size;
+        list.lkey = ctx->mr->lkey;
 
 	/* prepare the send work request */
 	memset(&wr, 0, sizeof(wr));
@@ -227,23 +237,7 @@ static int __repost(struct cc_context *ctx, struct ibv_qp *qp, int count, int pe
     return posted;
 }
 
-#if defined(USE_MPI)
-static int __exchange_info_by_mpi(struct cc_context *ctx,
-				  struct cc_proc_info *my_info,
-				  struct cc_proc_info *peer_info,
-				  int peer_proc)
-{
-	MPI_Status *status = NULL;
-
-	MPI_Sendrecv(my_info, sizeof(*my_info), MPI_CHAR,
-		     peer_proc, 0,
-		     peer_info, sizeof(*peer_info), MPI_CHAR,
-		     peer_proc, 0,
-		     MPI_COMM_WORLD, status);
-
-	return 0;
-}
-#endif
+#include "cc_utils.h"
 
 static int __init_ctx( struct cc_context *ctx )
 {
@@ -274,106 +268,108 @@ static int __init_ctx( struct cc_context *ctx )
 		log_fatal("memalign failed\n");
 	memset(ctx->buf, 0, ctx->conf.size * (ctx->conf.num_proc + 1));
 
-	ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, ctx->conf.size, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+        ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, ctx->conf.size,
+                             IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
 	if (!ctx->mr)
 		log_fatal("ibv_reg_mr failed (buf=%p size=%d)\n", ctx->buf, ctx->conf.size);
 
-	/*
-	 * 2. Create Manage QP
-	 * =======================================
-	 */
-	log_trace("create manage QP ...\n");
-	// Note: mcq was previously created with 0x10 entries. It must be larger
-	ctx->mcq = ibv_create_cq(ctx->ib_ctx, 0x1000, NULL, NULL, 0);
-	if (!ctx->mcq)
-		log_fatal("ibv_create_cq failed\n");
+        if (ctx->conf.use_mq) {
+            /*
+             * 2. Create Manage QP
+             * =======================================
+             */
+            log_trace("create manage QP ...\n");
+            // Note: mcq was previously created with 0x10 entries. It must be larger
+            ctx->mcq = ibv_create_cq(ctx->ib_ctx, 0x1000, NULL, NULL, 0);
+            if (!ctx->mcq)
+                log_fatal("ibv_create_cq failed\n");
 
-	{
-		struct ibv_exp_qp_init_attr init_attr;
-		struct ibv_qp_attr attr;
+            {
+                struct ibv_exp_qp_init_attr init_attr;
+                struct ibv_qp_attr attr;
 
-		memset(&init_attr, 0, sizeof(init_attr));
+                memset(&init_attr, 0, sizeof(init_attr));
 
-		init_attr.qp_context = NULL;
-		init_attr.send_cq = ctx->mcq;
-		init_attr.recv_cq = ctx->mcq;
-		init_attr.srq = NULL;
-		init_attr.cap.max_send_wr  = 0x0400; // Default 0x40 was insufficient
-		init_attr.cap.max_recv_wr  = 0;
-		init_attr.cap.max_send_sge = 16;
-		init_attr.cap.max_recv_sge = 16;
-		init_attr.cap.max_inline_data = 0;
-		init_attr.qp_type = IBV_QPT_RC;
-		init_attr.sq_sig_all = 0;  // so that we can poll for a single completion for the entire list of WQEs posted to the regular QP,
-		init_attr.pd = ctx->pd;
+                init_attr.qp_context = NULL;
+                init_attr.send_cq = ctx->mcq;
+                init_attr.recv_cq = ctx->mcq;
+                init_attr.srq = NULL;
+                init_attr.cap.max_send_wr  = 0x0400; // Default 0x40 was insufficient
+                init_attr.cap.max_recv_wr  = 0;
+                init_attr.cap.max_send_sge = 16;
+                init_attr.cap.max_recv_sge = 16;
+                init_attr.cap.max_inline_data = 0;
+                init_attr.qp_type = IBV_QPT_RC;
+                init_attr.sq_sig_all = 0;  // so that we can poll for a single completion for the entire list of WQEs posted to the regular QP,
+                init_attr.pd = ctx->pd;
 
-		{
-			init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
-			init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL;
-			ctx->mqp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
-		}
-		if (!ctx->mqp)
-			log_fatal("ibv_create_qp_ex failed\n");
+                {
+                    init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
+                    init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW;
+                    ctx->mqp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
+                }
+                if (!ctx->mqp)
+                    log_fatal("ibv_create_qp_ex failed\n");
 
-		memset(&attr, 0, sizeof(attr));
+                memset(&attr, 0, sizeof(attr));
 
-		attr.qp_state        = IBV_QPS_INIT;
-		attr.pkey_index      = 0;
-		attr.port_num        = ctx->ib_port;
-		attr.qp_access_flags = 0;
+                attr.qp_state        = IBV_QPS_INIT;
+                attr.pkey_index      = 0;
+                attr.port_num        = ctx->ib_port;
+                attr.qp_access_flags = 0;
 
-		rc = ibv_modify_qp(ctx->mqp, &attr,
-				IBV_QP_STATE              |
-				IBV_QP_PKEY_INDEX         |
-				IBV_QP_PORT               |
-				IBV_QP_ACCESS_FLAGS);
-		if (rc)
-			log_fatal("ibv_modify_qp failed\n");
+                rc = ibv_modify_qp(ctx->mqp, &attr,
+                                   IBV_QP_STATE              |
+                                   IBV_QP_PKEY_INDEX         |
+                                   IBV_QP_PORT               |
+                                   IBV_QP_ACCESS_FLAGS);
+                if (rc)
+                    log_fatal("ibv_modify_qp failed\n");
 
-		memset(&attr, 0, sizeof(attr));
+                memset(&attr, 0, sizeof(attr));
 
-		attr.qp_state              = IBV_QPS_RTR;
-		attr.path_mtu              = IBV_MTU_1024;
-		attr.dest_qp_num	   = ctx->mqp->qp_num;
-		attr.rq_psn                = 0;
-		attr.max_dest_rd_atomic    = 1;
-		attr.min_rnr_timer         = 12;
-		attr.ah_attr.is_global     = 0;
-		attr.ah_attr.dlid          = 0;
-		attr.ah_attr.sl            = 0;
-		attr.ah_attr.src_path_bits = 0;
-		attr.ah_attr.port_num      = 0;
+                attr.qp_state              = IBV_QPS_RTR;
+                attr.path_mtu              = IBV_MTU_1024;
+                attr.dest_qp_num	   = ctx->mqp->qp_num;
+                attr.rq_psn                = 0;
+                attr.max_dest_rd_atomic    = 1;
+                attr.min_rnr_timer         = 12;
+                attr.ah_attr.is_global     = 1;
+                attr.ah_attr.dlid          = 0;
+                attr.ah_attr.sl            = 0;
+                attr.ah_attr.src_path_bits = 0;
+                attr.ah_attr.port_num      = 0;
+                attr.ah_attr.grh.dgid = __query_gid(ctx);
+                rc = ibv_modify_qp(ctx->mqp, &attr,
+                                   IBV_QP_STATE              |
+                                   IBV_QP_AV                 |
+                                   IBV_QP_PATH_MTU           |
+                                   IBV_QP_DEST_QPN           |
+                                   IBV_QP_RQ_PSN             |
+                                   IBV_QP_MAX_DEST_RD_ATOMIC |
+                                   IBV_QP_MIN_RNR_TIMER);
+                if (rc)
+                    log_fatal("ibv_modify_qp failed\n");
 
-		rc = ibv_modify_qp(ctx->mqp, &attr,
-				IBV_QP_STATE              |
-				IBV_QP_AV                 |
-				IBV_QP_PATH_MTU           |
-				IBV_QP_DEST_QPN           |
-				IBV_QP_RQ_PSN             |
-				IBV_QP_MAX_DEST_RD_ATOMIC |
-				IBV_QP_MIN_RNR_TIMER);
-		if (rc)
-			log_fatal("ibv_modify_qp failed\n");
+                memset(&attr, 0, sizeof(attr));
 
-		memset(&attr, 0, sizeof(attr));
-
-		attr.qp_state      = IBV_QPS_RTS;
-		attr.timeout       = 14;
-		attr.retry_cnt     = 7;
-		attr.rnr_retry     = 7;
-		attr.sq_psn        = 0;
-		attr.max_rd_atomic = 1;
-		rc = ibv_modify_qp(ctx->mqp, &attr,
-				IBV_QP_STATE              |
-				IBV_QP_TIMEOUT            |
-				IBV_QP_RETRY_CNT          |
-				IBV_QP_RNR_RETRY          |
-				IBV_QP_SQ_PSN             |
-				IBV_QP_MAX_QP_RD_ATOMIC);
-		if (rc)
-			log_fatal("ibv_modify_qp failed\n");
-	}
-
+                attr.qp_state      = IBV_QPS_RTS;
+                attr.timeout       = 14;
+                attr.retry_cnt     = 7;
+                attr.rnr_retry     = 7;
+                attr.sq_psn        = 0;
+                attr.max_rd_atomic = 1;
+                rc = ibv_modify_qp(ctx->mqp, &attr,
+                                   IBV_QP_STATE              |
+                                   IBV_QP_TIMEOUT            |
+                                   IBV_QP_RETRY_CNT          |
+                                   IBV_QP_RNR_RETRY          |
+                                   IBV_QP_SQ_PSN             |
+                                   IBV_QP_MAX_QP_RD_ATOMIC);
+                if (rc)
+                    log_fatal("ibv_modify_qp failed\n");
+            }
+        }
 	ctx->proc_array = (struct cc_proc *)malloc(
 			ctx->conf.num_proc * sizeof(*ctx->proc_array));
 	if (!ctx->proc_array)
@@ -395,176 +391,18 @@ static int __init_ctx( struct cc_context *ctx )
 	 * =======================================
 	 */
 	for (i = 0; i < ctx->conf.num_proc; i++) {
-
-		if (i == ctx->conf.my_proc)
-			continue;
-
-		/*
+            if (ctx->conf.on_demand_conn) {
+                ctx->proc_array[i].rcq = NULL;
+            }else{
+                /*
 		 * 4.1 Create QPs for Peers
 		 * =======================================
 		 */
 		log_trace("create QPs for peers ...\n");
-		{
-			struct ibv_exp_cq_attr attr;
-			struct ibv_exp_qp_init_attr init_attr;
-
-
-			ctx->proc_array[i].scq = ctx->proc_array[ctx->conf.my_proc].scq;
-			ctx->proc_array[i].rcq = ibv_create_cq(ctx->ib_ctx, ctx->conf.cq_rx_depth, NULL, NULL, 0);
-			if (!ctx->proc_array[i].rcq) {
-				log_fatal("ibv_create_cq failed\n");
-			}
-
-			log_trace("create QPs for peers ...scq=%p  rcq=%p\n", ctx->proc_array[i].scq, ctx->proc_array[i].rcq);
-
-
-			attr.comp_mask            = IBV_EXP_CQ_ATTR_CQ_CAP_FLAGS;
-			attr.moderation.cq_count  = 0;
-			attr.moderation.cq_period = 0;
-			attr.cq_cap_flags         = IBV_EXP_CQ_IGNORE_OVERRUN;
-
-			rc = ibv_exp_modify_cq(ctx->proc_array[i].rcq, &attr, IBV_EXP_CQ_CAP_FLAGS);
-			if (rc) {
-				log_fatal("ibv_modify_cq failed\n");
-			}
-
-			memset(&init_attr, 0, sizeof(init_attr));
-
-			init_attr.qp_context = NULL;
-			init_attr.send_cq = ctx->proc_array[i].scq;
-			init_attr.recv_cq = ctx->proc_array[i].rcq;
-			init_attr.srq = NULL;
-			init_attr.cap.max_send_wr  = ctx->conf.qp_tx_depth;
-			init_attr.cap.max_recv_wr  = ctx->conf.qp_rx_depth;
-			init_attr.cap.max_send_sge = 16;
-			init_attr.cap.max_recv_sge = 16;
-			init_attr.cap.max_inline_data = 0;
-			init_attr.qp_type = IBV_QPT_RC;
-			init_attr.sq_sig_all = 0;
-			init_attr.pd = ctx->pd;
-
-			{
-				init_attr.comp_mask |= IBV_EXP_QP_INIT_ATTR_CREATE_FLAGS | IBV_EXP_QP_INIT_ATTR_PD;
-				init_attr.exp_create_flags = IBV_EXP_QP_CREATE_CROSS_CHANNEL | IBV_EXP_QP_CREATE_MANAGED_SEND | IBV_EXP_QP_CREATE_IGNORE_SQ_OVERFLOW | IBV_EXP_QP_CREATE_IGNORE_RQ_OVERFLOW;
-				ctx->proc_array[i].qp = ibv_exp_create_qp(ctx->ib_ctx, &init_attr);
-			}
-			if (!ctx->proc_array[i].qp)
-				log_fatal("ibv_create_qp_ex failed\n");
-
-		}
-	}
-		for (i = 0; i < ctx->conf.num_proc; i++) {
-			struct cc_proc_info local_info;
-			struct cc_proc_info remote_info;
-
-			if (i == ctx->conf.my_proc)
-				continue;
-		/*
-		 * 4.2 Exchange information with Peers
-		 * =======================================
-		 */
-		log_trace("exchange info with peers ...\n");
-		{
-			local_info.lid = htons(__get_local_lid(ctx->ib_ctx, ctx->ib_port));
-			local_info.qpn = htonl(ctx->proc_array[i].qp->qp_num);
-			local_info.psn = htonl(lrand48() & 0xffffff);
-			local_info.vaddr = htonll((uintptr_t)ctx->buf + ctx->conf.size * (i + 1));
-			local_info.rkey = htonl(ctx->mr->rkey);
-
-#if defined(USE_MPI)
-			rc = __exchange_info_by_mpi(ctx, &local_info, &remote_info, i);
-#endif
-			ctx->proc_array[i].info.lid = ntohs(remote_info.lid);
-			ctx->proc_array[i].info.qpn = ntohl(remote_info.qpn);
-			ctx->proc_array[i].info.psn = ntohl(remote_info.psn);
-			ctx->proc_array[i].info.vaddr = ntohll(remote_info.vaddr);
-			ctx->proc_array[i].info.rkey = ntohl(remote_info.rkey);
-
-			log_trace("local     info: lid = %d qpn = %d psn = %d vaddr = 0x%lx rkey = %d\n",
-					ntohs(local_info.lid),
-					ntohl(local_info.qpn),
-					ntohl(local_info.psn),
-					ntohll(local_info.vaddr),
-					ntohl(local_info.rkey));
-			log_trace("peer(#%d) info: lid = %d qpn = %d psn = %d vaddr = 0x%lx rkey = %d\n",
-					i,
-					ctx->proc_array[i].info.lid,
-					ctx->proc_array[i].info.qpn,
-					ctx->proc_array[i].info.psn,
-					ctx->proc_array[i].info.vaddr,
-					ctx->proc_array[i].info.rkey);
-		}
-
-		/*
-		 * 4.3 Complete QPs for Peers
-		 * =======================================
-		 */
-		log_trace("connect to peers ...\n");
-		{
-			struct ibv_qp_attr attr;
-
-                        if (__repost(ctx, ctx->proc_array[i].qp, ctx->conf.qp_rx_depth, i) != ctx->conf.qp_rx_depth)
-				log_fatal("__post_read failed\n");
-
-			memset(&attr, 0, sizeof(attr));
-
-			attr.qp_state        = IBV_QPS_INIT;
-			attr.pkey_index      = 0;
-			attr.port_num        = ctx->ib_port;
-			attr.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
-
-			rc = ibv_modify_qp(ctx->proc_array[i].qp, &attr,
-					IBV_QP_STATE              |
-					IBV_QP_PKEY_INDEX         |
-					IBV_QP_PORT               |
-					IBV_QP_ACCESS_FLAGS);
-			if (rc)
-				log_fatal("ibv_modify_qp failed\n");
-
-			memset(&attr, 0, sizeof(attr));
-
-			attr.qp_state              = IBV_QPS_RTR;
-			attr.path_mtu              = IBV_MTU_1024;
-			attr.dest_qp_num	   = ctx->proc_array[i].info.qpn;
-			attr.rq_psn                = ctx->proc_array[i].info.psn;
-			attr.max_dest_rd_atomic    = 4;
-			attr.min_rnr_timer         = 12;
-			attr.ah_attr.is_global     = 0;
-			attr.ah_attr.dlid          = ctx->proc_array[i].info.lid;
-			attr.ah_attr.sl            = 0;
-			attr.ah_attr.src_path_bits = 0;
-			attr.ah_attr.port_num      = ctx->ib_port;
-
-			rc = ibv_modify_qp(ctx->proc_array[i].qp, &attr,
-					IBV_QP_STATE              |
-					IBV_QP_AV                 |
-					IBV_QP_PATH_MTU           |
-					IBV_QP_DEST_QPN           |
-					IBV_QP_RQ_PSN             |
-					IBV_QP_MAX_DEST_RD_ATOMIC |
-					IBV_QP_MIN_RNR_TIMER);
-			if (rc)
-				log_fatal("ibv_modify_qp failed\n");
-
-			memset(&attr, 0, sizeof(attr));
-
-			attr.qp_state      = IBV_QPS_RTS;
-			attr.timeout       = 14;
-			attr.retry_cnt     = 7;
-			attr.rnr_retry     = 7;
-			attr.sq_psn        = ntohl(local_info.psn);
-			attr.max_rd_atomic = 4;
-			rc = ibv_modify_qp(ctx->proc_array[i].qp, &attr,
-					IBV_QP_STATE              |
-					IBV_QP_TIMEOUT            |
-					IBV_QP_RETRY_CNT          |
-					IBV_QP_RNR_RETRY          |
-					IBV_QP_SQ_PSN             |
-					IBV_QP_MAX_QP_RD_ATOMIC);
-			if (rc)
-				log_fatal("ibv_modify_qp failed\n");
-		}
-	}
+                create_qp_to_dest(i, ctx);
+                exchange_qp_info_and_connect(i, ctx);
+            }
+        }
 
 	return rc;
 }
@@ -575,7 +413,10 @@ static int __init_ctx( struct cc_context *ctx )
 
 #include "cc_latency_test.h"
 #include "cc_barrier.h"
-
+#include "cc_rk_barrier.h"
+#include "cc_rk_allreduce.h"
+#include "cc_ff_barrier.h"
+#include "cc_fanin.h"
 static void __usage(const char *argv)
 {
 	if (__my_proc == 0) {
@@ -619,10 +460,31 @@ static struct cc_alg_info     * get_test_algorithm(char *name)
 		return &__barrier_algorithm_recursive_doubling_info;  // reference it otherwise we get 'defined but not used' error in compilation
 	}
 
-	if (strstr(__latency_test_info.short_name, name) != NULL) {
+        if (strstr(__rk_barrier_info.short_name, name) != NULL) {
+                log_info("Chose barrier based on recursive King \n");
+                return &__rk_barrier_info;  // reference it otherwise we get 'defined but not used' error in compilation
+	}
+
+        if (strstr(__rk_allreduce_info.short_name, name) != NULL) {
+                log_info("Chose allreduce based on recursive King \n");
+                return &__rk_allreduce_info;  // reference it otherwise we get 'defined but not used' error in compilation
+	}
+
+        if (strstr(__ff_barrier_info.short_name, name) != NULL) {
+                log_info("Chose barrier based on Knomial Fanin/Fanout \n");
+                return &__ff_barrier_info;  // reference it otherwise we get 'defined but not used' error in compilation
+	}
+
+        if (strstr(__knomial_fanin_info.short_name, name) != NULL) {
+                log_info("Chose fanin based on knomial tree \n");
+                return &__knomial_fanin_info;  // reference it otherwise we get 'defined but not used' error in compilation
+        }
+
+        if (strstr(__latency_test_info.short_name, name) != NULL) {
                 log_info("Chose latency test\n");
 		return &__latency_test_info;
 	}
+
 
 	return NULL;
 }
@@ -637,9 +499,10 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 	ctx->conf.warmup = 10;
 	ctx->conf.size = 1;
 	ctx->conf.cq_tx_depth = 0x0200;
-	ctx->conf.cq_rx_depth = 0x0200;
-	ctx->conf.qp_tx_depth = 0x0200;
-	ctx->conf.qp_rx_depth = 0x0200;
+        ctx->conf.cq_rx_depth = 0x0200;
+        ctx->conf.qp_tx_depth = 0x0200;
+        ctx->conf.qp_rx_depth = 0x0200;
+        ctx->conf.on_demand_conn = 0;
 	ctx->conf.algorithm = &__barrier_algorithm_recursive_doubling_info;
 
 
@@ -665,11 +528,12 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 			{ .name = "check",	.has_arg = 1, .val = 'c' },
 			{ .name = "warmup",	.has_arg = 1, .val = 'w' },
 			{ .name = "size",	.has_arg = 1, .val = 's' },
-			{ .name = "debug",	.has_arg = 1, .val = 'd' },
+                        { .name = "debug",	.has_arg = 1, .val = 'd' },
+                        { .name = "on-demand-conn",	.has_arg = 1, .val = 'o' },
 			{ 0 }
 		};
 
-		c = getopt_long(argc, argv, "?t:ln:r:i:s:d", long_options, NULL);  // added a:l
+                c = getopt_long(argc, argv, "?t:ln:r:i:s:d:o:", long_options, NULL);  // added a:l
 		if (c == -1)
 			break;
 
@@ -714,7 +578,11 @@ static int __parse_cmd_line( struct cc_context *ctx, int argc, char * const argv
 
 		case 'd':
 			__debug_mask = strtol(optarg, NULL, 0);
+                        break;
+                case 'o':
+                        ctx->conf.on_demand_conn = strtol(optarg, NULL, 0);
 			break;
+                        
 
 		default:
 			__usage(argv[0]);
@@ -738,8 +606,11 @@ int main(int argc, char *argv[])
 	struct ibv_device **dev_list = NULL;
 	struct ibv_device *ib_dev = NULL;
 	const char *ib_devname = NULL;
-        int ib_port = -1;
         char *env = NULL;
+        int use_mq = 1;
+        int ib_port = -1;
+        int oob_barrier = 0;
+        int is_RoCE = 0;
 #if defined(USE_MPI)
 	MPI_Init(&argc, &argv);
 	log_trace("MPI is enabled\n");
@@ -749,12 +620,30 @@ int main(int argc, char *argv[])
 	rc = __parse_cmd_line(ctx, argc, argv);
 
         ib_devname = getenv("CC_IB_DEV");
+        env = getenv("CC_USE_MQ");
+
+        if (env) {
+            use_mq = atoi(env);
+        }
+        ctx->conf.use_mq = use_mq;
+
+        env = getenv("CC_ROCE");
+        if (env) {
+            is_RoCE = atoi(env);
+        }
+        ctx->conf.is_RoCE = is_RoCE;
+
+
         env = getenv("CC_IB_PORT");
         if (env) {
             ib_port = atoi(env);
         }
-	log_trace("my_proc: %d\n", ctx->conf.my_proc);
-	log_trace("num_proc: %d\n", ctx->conf.num_proc);
+
+        env = getenv("CC_OOB_BARRIER");
+        if (env) {
+            oob_barrier = atoi(env);
+        }
+        ctx->conf.oob_barrier = oob_barrier;
 
 	/* Get current IB device */
 	if (!rc) {
@@ -815,6 +704,8 @@ int main(int argc, char *argv[])
 		umad_release_ca(&ca);
 	}
 
+
+        ctx->ib_port = ib_port;
 	log_trace("port: %d\n", ctx->ib_port);
 
 	/* Open IB device */
@@ -829,6 +720,7 @@ int main(int argc, char *argv[])
 		log_trace("initialization ...\n");
 		rc = __init_ctx(ctx);
 	}
+
 
 	/* Launch target procedure */
 	if (!rc && ctx->conf.algorithm) {
@@ -850,41 +742,53 @@ int main(int argc, char *argv[])
 			int iters = ctx->conf.warmup;
 
 			log_trace("warmup ...\n");
-			while (!rc && iters--) {
-				rc = ctx->conf.algorithm->proc(ctx);
+                        while (!rc && iters--) {
+                            if (ctx->conf.oob_barrier) {
+                                MPI_Barrier(MPI_COMM_WORLD);
+                            }
+                            rc = ctx->conf.algorithm->proc(ctx);
 			}
-		}
+                }
+
                 MPI_Barrier(MPI_COMM_WORLD);
                 if (!rc && ctx->conf.iters) {
 			struct cc_timer start_time;
                         struct cc_timer end_time;
-                        double wt, wt_av, cpus, cpus_av;
-                        int iters = ctx->conf.iters;
+                        double wt = 0;
+                        double cpus = 0;
+			int iters = ctx->conf.iters;
 
 			log_trace("start target procedure ...\n");
-			__timer(&start_time);
-			while (!rc && iters--) {
-				rc = ctx->conf.algorithm->proc(ctx);
-			}
-			__timer(&end_time);
+                        while (!rc && iters--) {
+                            if (ctx->conf.oob_barrier) {
+                                MPI_Barrier(MPI_COMM_WORLD);
+                            }
+                            __timer(&start_time);
+                            rc = ctx->conf.algorithm->proc(ctx);
+                            __timer(&end_time);
+                            wt += (end_time.wall - start_time.wall);
+                            cpus += (end_time.cpus - start_time.cpus);
+                        }
 
-                        wt      = (end_time.wall - start_time.wall) / (double)ctx->conf.iters;
-                        wt_av   = 0;
-                        cpus    = (end_time.cpus - start_time.cpus) / (double)ctx->conf.iters;
-                        cpus_av = 0;
 
+                        cpus /= (double)ctx->conf.iters;
+                        wt /= (double)ctx->conf.iters;
+
+                        double wt_av = 0, wt_min = 0, wt_max = 0;
+                        double cpus_av = 0;
                         MPI_Allreduce(&wt,&wt_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
+                        MPI_Allreduce(&wt,&wt_min,1,MPI_DOUBLE,MPI_MIN,MPI_COMM_WORLD);
+                        MPI_Allreduce(&wt,&wt_max,1,MPI_DOUBLE,MPI_MAX,MPI_COMM_WORLD);
                         MPI_Allreduce(&cpus,&cpus_av,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
                         wt_av = wt_av / ctx->conf.num_proc;
                         cpus_av = cpus_av / ctx->conf.num_proc;
-
-			if (ctx->conf.my_proc == 0) {
-                            log_info("Title                : %s\n", ctx->conf.algorithm->name);
-                            log_info("Description          : %s\n", ctx->conf.algorithm->note);
-                            log_info("Number of processes  : %d\n", ctx->conf.num_proc);
-                            log_info("Iterations           : %d\n", ctx->conf.iters);
-                            log_info("Time wall (usec/op)  : %0.4f usec\n", wt_av);
-                            log_info("Time cpus (usec/op)  : %0.4f usec\n", cpus_av);
+                        if (ctx->conf.my_proc == 0) {
+				log_info("Title                                      : %s\n", ctx->conf.algorithm->name);
+				log_info("Description                                : %s\n", ctx->conf.algorithm->note);
+				log_info("Number of processes                        : %d\n", ctx->conf.num_proc);
+                                log_info("Iterations                                 : %d\n", ctx->conf.iters);
+                                log_info("Time wall [us/op] (min : max : av : root)  : %0.4f : %0.4f : %0.4f : %0.4f us\n", wt_min, wt_max, wt_av, wt);
+                                log_info("Time cpus (usec/op)  : %0.4f usec\n", cpus_av);
 			}
 		}
 
@@ -894,14 +798,15 @@ int main(int argc, char *argv[])
 		}
 	}
 
+
 	log_trace("finalization ...\n");
-	if (ctx->ib_ctx)
-		ibv_close_device(ctx->ib_ctx);
-	if (dev_list)
-		ibv_free_device_list(dev_list);
+        if (ctx->ib_ctx)
+                ibv_close_device(ctx->ib_ctx);
+        if (dev_list)
+                ibv_free_device_list(dev_list);
 
 #if defined(USE_MPI)
-	MPI_Barrier(MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
 	MPI_Finalize();
 #endif
 
