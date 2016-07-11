@@ -110,6 +110,19 @@ static inline  int __exchange_info_by_mpi(struct cc_context *ctx,
 }
 #endif
 
+static inline
+union ibv_gid __query_gid(struct cc_context *ctx) {
+    union ibv_gid gid;
+    int rc;
+
+    rc = ibv_query_gid(ctx->ib_ctx, ctx->ib_port, 0, &gid);
+    if (rc) {
+        log_fatal("Failed to query gid, rc %d\n", rc);
+    }
+    log_trace("GID subnet prefix 0x%llx, if_id 0x%llx\n",
+              gid.global.subnet_prefix, gid.global.interface_id);
+    return gid;
+}
 static inline void
 exchange_qp_info_and_connect(int i, struct cc_context *ctx) {
     int rc;
@@ -188,11 +201,12 @@ exchange_qp_info_and_connect(int i, struct cc_context *ctx) {
         attr.rq_psn                = ctx->proc_array[i].info.psn;
         attr.max_dest_rd_atomic    = 4;
         attr.min_rnr_timer         = 12;
-        attr.ah_attr.is_global     = 0;
+        attr.ah_attr.is_global     = ctx->conf.is_RoCE ? 1 : 0;
         attr.ah_attr.dlid          = ctx->proc_array[i].info.lid;
         attr.ah_attr.sl            = 0;
         attr.ah_attr.src_path_bits = 0;
         attr.ah_attr.port_num      = ctx->ib_port;
+        attr.ah_attr.grh.dgid = __query_gid(ctx);
 
         rc = ibv_modify_qp(ctx->proc_array[i].qp, &attr,
                            IBV_QP_STATE              |
@@ -203,7 +217,7 @@ exchange_qp_info_and_connect(int i, struct cc_context *ctx) {
                            IBV_QP_MAX_DEST_RD_ATOMIC |
                            IBV_QP_MIN_RNR_TIMER);
         if (rc)
-            log_fatal("ibv_modify_qp failed\n");
+            log_fatal("ibv_modify_qp failed, %d\n", rc);
 
         memset(&attr, 0, sizeof(attr));
 

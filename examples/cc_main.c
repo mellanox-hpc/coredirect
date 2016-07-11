@@ -69,6 +69,7 @@ struct cc_conf {
 	int                     qp_tx_depth;
         int                     qp_rx_depth;
         int                     use_mq;
+        int                     is_RoCE;
         int                     oob_barrier;
 	int                     size;
         struct cc_alg_info     *algorithm;
@@ -124,7 +125,8 @@ static int  __my_proc = 0;
 #define log_fatal(fmt, ...)  \
 	do {                                                           \
 		if (__my_proc == 0 && __debug_mask >= 0) {                 \
-			fprintf(stderr, "\033[0;3%sm" "[    FATAL ] #%d: " fmt "\033[m", "1", __my_proc, ##__VA_ARGS__);    \
+                        fprintf(stderr, "\033[0;3%sm" "[    FATAL ] #%d, %s:%d. errno %d: " fmt "\033[m", "1", __my_proc,\
+                                __FILE__,__LINE__,errno, ##__VA_ARGS__); \
 			exit(errno);    \
 		}    \
 	} while(0)
@@ -332,12 +334,12 @@ static int __init_ctx( struct cc_context *ctx )
                 attr.rq_psn                = 0;
                 attr.max_dest_rd_atomic    = 1;
                 attr.min_rnr_timer         = 12;
-                attr.ah_attr.is_global     = 0;
+                attr.ah_attr.is_global     = 1;
                 attr.ah_attr.dlid          = 0;
                 attr.ah_attr.sl            = 0;
                 attr.ah_attr.src_path_bits = 0;
                 attr.ah_attr.port_num      = 0;
-
+                attr.ah_attr.grh.dgid = __query_gid(ctx);
                 rc = ibv_modify_qp(ctx->mqp, &attr,
                                    IBV_QP_STATE              |
                                    IBV_QP_AV                 |
@@ -608,6 +610,7 @@ int main(int argc, char *argv[])
         int use_mq = 1;
         int ib_port = 1;
         int oob_barrier = 0;
+        int is_RoCE = 0;
 #if defined(USE_MPI)
 	MPI_Init(&argc, &argv);
 	log_trace("MPI is enabled\n");
@@ -622,6 +625,14 @@ int main(int argc, char *argv[])
             use_mq = atoi(env);
         }
         ctx->conf.use_mq = use_mq;
+
+        env = getenv("CC_ROCE");
+        if (env) {
+            is_RoCE = atoi(env);
+        }
+        ctx->conf.is_RoCE = is_RoCE;
+
+
         env = getenv("CC_IB_PORT");
         if (env) {
             ib_port = atoi(env);
