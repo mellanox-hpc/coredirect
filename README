@@ -27,6 +27,11 @@ The 'recursive doubling barrier' and the 'ping pong latency test' can be run lau
     mpirun -np $np   ./examples/ibv_cc_barrier --debug=0 --size=8 --np=$np --iters=1000 --warmup=0 --test=barrier
     mpirun -np $np   ./examples/ibv_cc_barrier --debug=0 --size=8 --np=$np --iters=1000 --warmup=0 --test=latency
 
+Recursive Knomial barrier on RoCE with managed send (MQ=1) with knomial radix 2 (MPI used only for connection data exchange):
+    N=2; PPN=8; mpirun -n $((N*PPN)) -hostfile ./hosts --display-map --npernode $PPN --bind-to core -mca pml ob1 -mca btl self,sm,tcp -x CC_IB_DEV=mlx4_0 -x CC_IB_PORT=1 -x CC_RADIX=2 -x CC_USE_MQ=1 -x CC_ROCE=1 install/bin/ibv_cc_barrier --size=128 --np=$((N*PPN)) --test=barrier_rk --debug=1 --iters=5000 --warmup=1000 --check=0
+
+
+
 There are two available control environment variables:
 CC_IB_DEV  - specifies the device to be used (e.g. export CC_IB_DEV=mlx5_0)
 CC_IB_PORT - specifies the port to be used (e.g. export CC_IB_PORT=1)
